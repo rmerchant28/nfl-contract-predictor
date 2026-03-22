@@ -446,10 +446,15 @@ def fmt_stat(key: str, value: float) -> str:
     """Format a stat value sensibly based on its name."""
     if key.endswith("_games"):
         return str(int(value))
-    if "pct" in key or "rate" in key or "share" in key:
-        return f"{value * 100:.1f}%"
-    if "epa" in key or "pacr" in key or "racr" in key or "dakota" in key:
+    # These are ratios/indices, not percentages — show as raw number
+    if any(x in key for x in ("epa", "pacr", "racr", "dakota", "wopr", "air_yards_share", "target_share")):
         return f"{value:.2f}"
+    # Completion pct, catch rate etc are stored as decimals (0.65 = 65%)
+    if "pct" in key or "catch_rate" in key:
+        # If value is already >1 it's been stored as a whole number — don't multiply
+        if abs(value) <= 1.5:
+            return f"{value * 100:.1f}%"
+        return f"{value:.1f}%"
     if value > 100:
         return f"{value:,.0f}"
     return f"{value:.1f}"
@@ -457,9 +462,9 @@ def fmt_stat(key: str, value: float) -> str:
 
 def fmt_key(key: str) -> str:
     """Human-readable stat label."""
-    key = key.replace("_mean", " (avg)").replace("_last", " (last yr)").replace("_trend", " (trend)")
+    key = key.replace("_mean", "").replace("_last", " (last yr)").replace("_trend", " (trend)")
     key = key.replace("_", " ")
-    return key.title()
+    return key.strip().title()
 
 
 # ── Main app ───────────────────────────────────────────────────────────────────
