@@ -6,7 +6,7 @@ pandas>=2.0
 numpy
 scikit-learn
 lightgbm
-streamlit
+streamlit>=1.40.0
 plotly
 requests
 beautifulsoup4
@@ -15,3 +15,4 @@ certifi
 joblib
 matplotlib
 seaborn
+altair>=5.0.0
