@@ -1,0 +1,23 @@
+# requirements-data.txt
+# ======================
+# For venv_data — data collection only (run_pipeline.py)
+# Install with:
+#   pip install setuptools==69.5.1 wheel
+#   pip install -r requirements-data.txt
+#   pip install nfl_data_py --no-deps
+
+# Core scraping
+pandas>=2.0
+numpy
+requests
+beautifulsoup4
+lxml
+certifi
+joblib
+
+# nfl_data_py dependencies (installed manually since nfl_data_py uses --no-deps)
+appdirs
+fastparquet
+pyarrow
+fsspec
+cramjam
