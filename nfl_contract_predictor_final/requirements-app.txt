@@ -1,0 +1,19 @@
+# requirements-app.txt
+# =====================
+# For venv312 — modelling and Streamlit app (notebooks/model.py + app.py)
+# Install with:
+#   pip install -r requirements-app.txt
+
+pandas>=2.0
+numpy
+scikit-learn
+lightgbm
+streamlit
+plotly
+requests
+beautifulsoup4
+lxml
+certifi
+joblib
+matplotlib
+seaborn

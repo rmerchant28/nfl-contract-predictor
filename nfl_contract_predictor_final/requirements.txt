@@ -1,0 +1,17 @@
+# Main requirements file — used by Streamlit Cloud
+# This is the app environment (venv312 equivalent)
+# For the data pipeline, use requirements-data.txt with venv_data
+
+pandas>=2.0
+numpy
+scikit-learn
+lightgbm
+streamlit
+plotly
+requests
+beautifulsoup4
+lxml
+certifi
+joblib
+matplotlib
+seaborn
