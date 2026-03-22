@@ -446,12 +446,16 @@ def fmt_stat(key: str, value: float) -> str:
     """Format a stat value sensibly based on its name."""
     if key.endswith("_games"):
         return str(int(value))
-    # These are ratios/indices, not percentages — show as raw number
-    if any(x in key for x in ("epa", "pacr", "racr", "dakota", "wopr", "air_yards_share", "target_share")):
+    # Ratio metrics — show as raw number
+    if any(x in key for x in ("epa", "pacr", "racr", "dakota", "wopr")):
         return f"{value:.2f}"
-    # Completion pct, catch rate etc are stored as decimals (0.65 = 65%)
-    if "pct" in key or "catch_rate" in key:
-        # If value is already >1 it's been stored as a whole number — don't multiply
+    # Share/rate metrics stored as decimals (0.47 = 47%)
+    if any(x in key for x in ("target_share", "air_yards_share", "catch_rate", "completion_pct")):
+        if abs(value) <= 1.5:
+            return f"{value * 100:.1f}%"
+        return f"{value:.1f}%"
+    # Other pct columns
+    if "pct" in key:
         if abs(value) <= 1.5:
             return f"{value * 100:.1f}%"
         return f"{value:.1f}%"
@@ -609,7 +613,9 @@ def main():
         if features:
             # Separate into meaningful groups — exclude _games (season count, not useful to show)
             mean_feats  = {k: v for k, v in features.items()
-                           if k.endswith("_mean") and not np.isnan(float(v))}
+                           if k.endswith("_mean")
+                           and not np.isnan(float(v))
+                           and not k.startswith("games_")}
             other_feats = {k: v for k, v in features.items()
                            if not any(k.endswith(s) for s in ("_mean", "_last", "_trend", "_games"))
                            and not np.isnan(float(v))}
