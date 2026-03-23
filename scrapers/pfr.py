@@ -167,7 +167,7 @@ def scrape_passing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
 
     log.info("Fetching passing stats %d-%d via nfl_data_py...", min(years), max(years))
     df = nfl.import_seasonal_data(years, s_type="REG")
-    df = df[df["attempts"] >= 50].copy()
+    df = df[df["attempts"] >= 1].copy()
 
     id_map = _get_player_id_map()
     df = _add_player_names(df, id_map)
@@ -216,7 +216,7 @@ def scrape_rushing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
 
     log.info("Fetching rushing stats %d-%d via nfl_data_py...", min(years), max(years))
     df = nfl.import_seasonal_data(years, s_type="REG")
-    df = df[df["carries"] >= 20].copy()
+    df = df[df["carries"] >= 1].copy()
 
     id_map = _get_player_id_map()
     df = _add_player_names(df, id_map)
@@ -253,7 +253,7 @@ def scrape_receiving_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
 
     log.info("Fetching receiving stats %d-%d via nfl_data_py...", min(years), max(years))
     df = nfl.import_seasonal_data(years, s_type="REG")
-    df = df[df["targets"] >= 10].copy()
+    df = df[df["targets"] >= 1].copy()
 
     id_map = _get_player_id_map()
     df = _add_player_names(df, id_map)
@@ -336,21 +336,35 @@ def build_pre_contract_stats(
     if subset.empty:
         return {}
 
+    # ── Gap Years (Recency penalty) ───────────────────────────────────────────
+    # How many years since the player's last active season in this window?
+    last_active_season = int(subset["season"].max())
+    features = {"gap_years": int((signing_year - 1) - last_active_season)}
+
     if numeric_cols is None:
         numeric_cols = subset.select_dtypes(include="number").columns.tolist()
         numeric_cols = [c for c in numeric_cols if c != "season"]
-
-    features = {}
     for col in numeric_cols:
         vals = pd.to_numeric(subset[col], errors="coerce").dropna().values
         if len(vals) == 0:
             continue
         features[f"{col}_mean"]  = float(vals.mean())
         features[f"{col}_last"]  = float(vals[-1])
+        features[f"{col}_max"]   = float(vals.max())
         features[f"{col}_games"] = int(len(vals))
         if len(vals) >= 2:
             xs = np.arange(len(vals), dtype=float)
             features[f"{col}_trend"] = float(np.polyfit(xs, vals, 1)[0])
+
+    # ── Special Feature: Starter Seasons Count ────────────────────────────────
+    # explicitly count seasons with starter-level volume
+    if "attempts" in subset.columns:
+        features["starter_seasons"] = int((subset["attempts"] >= 250).sum())
+    elif "games_started" in subset.columns:
+        features["starter_seasons"] = int((subset["games_started"] >= 8).sum())
+    elif "games" in subset.columns:
+         # Fallback if games_started missing: >8 games played is roughly starter territory
+        features["starter_seasons"] = int((subset["games"] >= 8).sum())
 
     return features
 
