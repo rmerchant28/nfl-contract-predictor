@@ -16,3 +16,4 @@ joblib
 matplotlib
 seaborn
 altair>=5.0.0
+xgboost
