@@ -34,16 +34,16 @@ POSITION_SLUGS = {
     "C":   "center",
 }
 
-# Rookie deal APY thresholds — contracts below these are rookie/minimum deals
-# and should be excluded from the model (we want extensions and FA signings)
+# Minimum APY thresholds — only exclude true minimum/practice squad deals
+# Lowered QB threshold to include backup contracts and rookie deals
 ROOKIE_APY_THRESHOLD = {
-    "QB": 15_000_000,
-    "WR":  5_000_000,
-    "RB":  4_000_000,
-    "TE":  4_000_000,
-    "OT":  5_000_000,
-    "OG":  4_000_000,
-    "C":   4_000_000,
+    "QB":  3_000_000,
+    "WR":  2_000_000,
+    "RB":  2_000_000,
+    "TE":  2_000_000,
+    "OT":  3_000_000,
+    "OG":  2_000_000,
+    "C":   2_000_000,
 }
 
 # Historical cap figures — hardcoded as a reliable fallback.

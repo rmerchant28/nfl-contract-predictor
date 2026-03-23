@@ -1,6 +1,6 @@
 {
   "position": "WR",
-  "model_name": "Ridge",
+  "model_name": "HGB",
   "feature_cols": [
     "games_mean",
     "games_last",
@@ -54,10 +54,6 @@
     "wopr_x_last",
     "wopr_x_games",
     "wopr_x_trend",
-    "targets_per_game_mean",
-    "targets_per_game_last",
-    "targets_per_game_games",
-    "targets_per_game_trend",
     "peer_rank",
     "top_contract_pct",
     "years_since_reset"

@@ -72,17 +72,26 @@ def _make_name_key(name: str) -> str:
 
 def _get_player_id_map() -> pd.DataFrame:
     """
-    Return player_id -> player_display_name + position via import_ids().
+    Return player_id -> player_name + position via import_ids().
+    import_ids() columns confirmed: gsis_id, name, position
     Falls back to empty DataFrame if unavailable.
     """
     nfl = _import_nfl_data_py()
     try:
         ids = nfl.import_ids()
-        # import_ids returns gsis_id which matches player_id in seasonal data
-        name_col  = next((c for c in ids.columns if "display" in c.lower()), None)
-        name_col  = name_col or next((c for c in ids.columns if "name" in c.lower()), None)
-        id_col    = next((c for c in ids.columns if "gsis" in c.lower()), None)
-        pos_col   = next((c for c in ids.columns if "position" in c.lower()), None)
+
+        # Use exact column names confirmed from import_ids() schema
+        id_col  = "gsis_id"   if "gsis_id"  in ids.columns else None
+        name_col = "name"     if "name"      in ids.columns else None
+        pos_col  = "position" if "position"  in ids.columns else None
+
+        # Fallback fuzzy search if exact names not found
+        if not id_col:
+            id_col = next((c for c in ids.columns if "gsis" in c.lower()), None)
+        if not name_col:
+            # Prefer "name" over "merge_name" — match exact word only
+            name_col = next((c for c in ids.columns if c.lower() == "name"), None)
+            name_col = name_col or next((c for c in ids.columns if "display" in c.lower()), None)
 
         if not id_col or not name_col:
             log.warning("import_ids() columns unexpected: %s", ids.columns.tolist())
@@ -137,6 +146,18 @@ def _add_player_names(df: pd.DataFrame, id_map: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Seasonal stats ─────────────────────────────────────────────────────────────
+def _get_games_started(years: list[int], id_map: pd.DataFrame) -> pd.DataFrame:
+    """
+    Derive a starter proxy from seasonal data.
+    Uses attempts_per_game for QBs and targets_per_game for skill positions.
+    Returns DataFrame with columns: player_id, season, games_started
+    (here games_started = games played, since weekly games column doesn't exist)
+    """
+    # weekly import_weekly_data doesn't have a reliable 'games' column
+    # Fall back to returning empty so the seasonal 'games' column is used directly
+    return pd.DataFrame()
+
+
 def scrape_passing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
     """QB passing stats for a range of seasons via nfl_data_py."""
     _fix_ssl()
@@ -151,6 +172,11 @@ def scrape_passing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
     id_map = _get_player_id_map()
     df = _add_player_names(df, id_map)
     df["name_key"] = df["player_name_norm"].apply(_make_name_key)
+
+    # Add games_started from weekly data
+    gs = _get_games_started(years, id_map)
+    if not gs.empty:
+        df = df.merge(gs, on=["player_id", "season"], how="left")
 
     rename = {
         "passing_yards":             "pass_yards",
@@ -168,6 +194,12 @@ def scrape_passing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
         df["td_pct"] = df["pass_tds"] / df["attempts"]
     if "interceptions" in df.columns and "attempts" in df.columns:
         df["int_pct"] = df["interceptions"] / df["attempts"]
+
+    # Starter proxy — attempts per game. Starters typically average 25+ per game.
+    # This lets the model learn backup vs starter market value.
+    if "attempts" in df.columns and "games" in df.columns:
+        df["attempts_per_game"] = df["attempts"] / df["games"].replace(0, 1)
+        df["is_starter"] = (df["attempts_per_game"] >= 20).astype(int)
 
     save_raw(df, "pfr_passing")
     named = df["player_name"].notna().sum() if "player_name" in df.columns else 0
@@ -189,6 +221,10 @@ def scrape_rushing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
     id_map = _get_player_id_map()
     df = _add_player_names(df, id_map)
     df["name_key"] = df["player_name_norm"].apply(_make_name_key)
+
+    gs = _get_games_started(years, id_map)
+    if not gs.empty:
+        df = df.merge(gs, on=["player_id", "season"], how="left")
 
     rename = {
         "carries":             "rush_attempts",
@@ -223,6 +259,10 @@ def scrape_receiving_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
     df = _add_player_names(df, id_map)
     df["name_key"] = df["player_name_norm"].apply(_make_name_key)
 
+    gs = _get_games_started(years, id_map)
+    if not gs.empty:
+        df = df.merge(gs, on=["player_id", "season"], how="left")
+
     rename = {
         "receiving_yards":             "rec_yards",
         "receiving_tds":               "rec_tds",
@@ -242,6 +282,8 @@ def scrape_receiving_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
         df["yards_per_reception"] = df["rec_yards"] / df["receptions"]
     if "rec_yards" in df.columns and "targets" in df.columns:
         df["yards_per_target"] = df["rec_yards"] / df["targets"]
+    if "targets" in df.columns and "games" in df.columns:
+        df["targets_per_game"] = df["targets"] / df["games"].replace(0, 1)
 
     save_raw(df, "pfr_receiving")
     log.info("  Receiving rows: %d", len(df))
