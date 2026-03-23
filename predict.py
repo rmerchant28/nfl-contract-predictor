@@ -69,17 +69,41 @@ def load_model(position: str) -> tuple:
     if position in _model_cache:
         return _model_cache[position], _manifest_cache[position]
 
-    # Find the model file for this position
-    model_files = list(MODELS_DIR.glob(f"{position}_*.pkl"))
-    if not model_files:
-        raise FileNotFoundError(
-            f"No model found for {position} in {MODELS_DIR}. "
-            "Run notebooks/model.py first."
-        )
+    # 1. Try to identify the specific best model from results_summary.json
+    results_path = MODELS_DIR / "results_summary.json"
+    target_model_file = None
 
-    model_path    = model_files[0]
-    manifest_path = model_path.with_suffix("").with_suffix(".json").parent / \
-                    (model_path.stem + "_manifest.json")
+    if results_path.exists():
+        try:
+            with open(results_path) as f:
+                summary = json.load(f)
+            best_name = summary.get("best_models", {}).get(position)
+            if best_name:
+                log.info("Best model for %s according to summary: %s", position, best_name)
+                target_model_file = MODELS_DIR / f"{position}_{best_name.lower()}.pkl"
+        except Exception as e:
+            log.warning("Could not read results_summary.json: %s", e)
+
+    # 2. Use specific model if found, else fallback to latest modified file
+    if target_model_file and target_model_file.exists():
+        model_path = target_model_file
+    else:
+        model_files = list(MODELS_DIR.glob(f"{position}_*.pkl"))
+        if not model_files:
+            raise FileNotFoundError(
+                f"No model found for {position} in {MODELS_DIR}. "
+                "Run notebooks/model.py first."
+            )
+        # Sort by mtime descending (newest first)
+        model_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        model_path = model_files[0]
+
+        if target_model_file:
+            log.warning("Expected model %s not found. Falling back to %s.",
+                        target_model_file.name, model_path.name)
+
+    log.info("Loading model file: %s", model_path.name)
+    manifest_path = MODELS_DIR / f"{model_path.stem}_manifest.json"
 
     model = joblib.load(model_path)
     with open(manifest_path) as f:
@@ -229,7 +253,10 @@ def _fetch_player_stats(
     numeric_cols = player_stats.select_dtypes(include="number").columns.tolist()
     numeric_cols = [c for c in numeric_cols if c != "season"]
 
-    features = {}
+    # ── Gap Years ─────────────────────────────────────────────────────────────
+    last_active_season = int(player_stats["season"].max())
+    features = {"gap_years": int((signing_year - 1) - last_active_season)}
+
     player_stats = player_stats.sort_values("season")
 
     for col in numeric_cols:
@@ -238,10 +265,19 @@ def _fetch_player_stats(
             continue
         features[f"{col}_mean"]  = float(vals.mean())
         features[f"{col}_last"]  = float(vals[-1])
+        features[f"{col}_max"]   = float(vals.max())
         features[f"{col}_games"] = int(len(vals))
         if len(vals) >= 2:
             xs = np.arange(len(vals), dtype=float)
             features[f"{col}_trend"] = float(np.polyfit(xs, vals, 1)[0])
+
+    # ── Starter Seasons Count ──────────────────────────────────────────────────
+    if "attempts" in player_stats.columns:
+        features["starter_seasons"] = int((player_stats["attempts"] >= 250).sum())
+    elif "games_started" in player_stats.columns:
+        features["starter_seasons"] = int((player_stats["games_started"] >= 8).sum())
+    elif "games" in player_stats.columns:
+        features["starter_seasons"] = int((player_stats["games"] >= 8).sum())
 
     return features
 
@@ -303,6 +339,20 @@ def _get_market_context(position: str, signing_year: int) -> dict:
         (contracts["signing_year"] == signing_year)
     ]
     top_pct = same_pos_same_year["apy_pct_cap"].max() if not same_pos_same_year.empty else np.nan
+
+    # Fallback: If predicting for a future year (e.g. 2025) with no signed contracts yet,
+    # carry forward the max cap % from the most recent active year.
+    # This prevents the model from seeing "NaN" and imputing a low median value.
+    if pd.isna(top_pct):
+        past_contracts = contracts[
+            (contracts["position"] == position) &
+            (contracts["signing_year"] < signing_year)
+        ].sort_values("signing_year", ascending=False)
+
+        if not past_contracts.empty:
+            last_year = past_contracts["signing_year"].iloc[0]
+            last_year_max = past_contracts[past_contracts["signing_year"] == last_year]["apy_pct_cap"].max()
+            top_pct = last_year_max
 
     # Years since record contract
     historical = contracts[
@@ -377,7 +427,8 @@ def predict_contract(
         if np.isnan(val) if isinstance(val, float) else val != val:
             missing.append(col)
 
-    X = np.array(feature_vector).reshape(1, -1)
+    # Convert to DataFrame to avoid warnings from tree models expecting feature names
+    X = pd.DataFrame([feature_vector], columns=feature_cols)
 
     # Predict
     predicted_cap_pct = float(model.predict(X)[0])
@@ -427,7 +478,8 @@ def find_comps(
     Find historical contracts most similar in cap % to the prediction.
     Useful for the Streamlit app's 'comparable contracts' table.
     """
-    contracts_path = ROOT / "data" / "raw" / "contracts_with_cap_pct.csv"
+    # Use processed features file (excludes rookies/no-stats players)
+    contracts_path = ROOT / "data" / "processed" / "model_features.csv"
     if not contracts_path.exists():
         return pd.DataFrame()
 

@@ -85,6 +85,7 @@ def build_qb_features(contracts: pd.DataFrame, passing_df: pd.DataFrame) -> pd.D
         if not feats:
             log.debug("No stats found for QB %s (signing %d)",
                       contract["player_name"], contract["signing_year"])
+            continue  # Skip rookies / players with no recent history
         row = {**contract.to_dict(), **feats}
         rows.append(row)
 
@@ -169,6 +170,7 @@ def build_skill_features(
         if not feats:
             log.debug("No stats for %s %s (signing %d)",
                       pos, contract["player_name"], contract["signing_year"])
+            continue  # Skip rookies / players with no recent history
 
         row = {**contract.to_dict(), **feats}
         rows.append(row)
@@ -211,6 +213,9 @@ def build_ol_features(
             pen_counts, contract["signing_year"],
             contract["player_name_norm"], WINDOW, ["penalty_count"],
         )
+        if not feats:
+            continue
+
         row = {**contract.to_dict(), **feats}
         rows.append(row)
 

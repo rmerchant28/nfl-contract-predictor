@@ -29,7 +29,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from sklearn.impute import SimpleImputer
-from sklearn.ensemble import HistGradientBoostingRegressor, GradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, GradientBoostingRegressor, RandomForestRegressor
 import joblib
 
 warnings.filterwarnings("ignore")
@@ -42,6 +42,12 @@ try:
 except Exception:
     log.warning("LightGBM not available — using GradientBoostingRegressor instead.")
     HAS_LGB = False
+
+try:
+    import xgboost as xgb
+    HAS_XGB = True
+except ImportError:
+    HAS_XGB = False
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 ROOT        = Path(__file__).resolve().parent.parent
@@ -66,6 +72,7 @@ DROP_COLS = [
     "apy_pct_cap_otc",        # OTC's own cap% — data leakage
     "inflated_value",
     "position",               # encoded separately per-model
+    "peer_rank",              # Leakage: rank is unknown before prediction
 ]
 
 
@@ -106,6 +113,7 @@ def loyo_cv(
     df: pd.DataFrame,
     model_fn,
     feature_cols: list[str],
+    position: str,
 ) -> pd.DataFrame:
     """
     Leave-one-year-out cross-validation.
@@ -128,13 +136,22 @@ def loyo_cv(
         if len(train) < MIN_TRAIN_ROWS or len(test) == 0:
             continue
 
-        X_train = train[feature_cols].values
-        y_train = train[TARGET].values
-        X_test  = test[feature_cols].values
-        y_test  = test[TARGET].values
+        # Keep as DataFrame/Series so feature names are passed to the model
+        X_train = train[feature_cols]
+        y_train = train[TARGET]
+        X_test  = test[feature_cols]
+        y_test  = test[TARGET]
+
+        # For QBs, weight samples by their target value (cap %)
+        # This forces the model to prioritize accuracy on elite contracts ($50M+)
+        # over minimum salary contracts ($2M), fixing the underprediction of stars.
+        fit_params = {}
+        if position == "QB":
+            # Apply sample weighting to focus on elite contracts
+            fit_params["model__sample_weight"] = y_train * 100
 
         model = model_fn()
-        model.fit(X_train, y_train)
+        model.fit(X_train, y_train, **fit_params)
         y_pred = model.predict(X_test)
 
         for yt, yp, yr in zip(y_test, y_pred, test["signing_year"]):
@@ -163,9 +180,10 @@ def make_hgb():
     """HistGradientBoostingRegressor — pure sklearn, no native deps, handles NaN natively."""
     return Pipeline([
         ("model", HistGradientBoostingRegressor(
-            max_iter=300,
+            max_iter=500,
             learning_rate=0.05,
-            max_depth=4,
+            max_depth=8,
+            min_samples_leaf=4,  # Lowered from default 20 to allow fitting small elite clusters
             random_state=RANDOM_STATE,
         )),
     ])
@@ -176,9 +194,10 @@ def make_lgb():
         return Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("model", lgb.LGBMRegressor(
-                n_estimators=300,
+                n_estimators=500,
                 learning_rate=0.05,
-                max_depth=4,
+                max_depth=8,
+                min_child_samples=5,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=RANDOM_STATE,
@@ -189,18 +208,52 @@ def make_lgb():
         return Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("model", GradientBoostingRegressor(
-                n_estimators=200,
+                n_estimators=300,
                 learning_rate=0.05,
-                max_depth=4,
+                max_depth=6,
                 random_state=RANDOM_STATE,
             )),
         ])
 
 
+def make_rf():
+    """RandomForest — good for noisy data, less prone to overfitting on outliers than boosting."""
+    return Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("model", RandomForestRegressor(
+            n_estimators=500,
+            max_depth=10,
+            min_samples_leaf=2,
+            random_state=RANDOM_STATE,
+            n_jobs=-1
+        )),
+    ])
+
+
+def make_xgb():
+    if HAS_XGB:
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("model", xgb.XGBRegressor(
+                n_estimators=500,
+                learning_rate=0.05,
+                max_depth=8,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=RANDOM_STATE,
+                n_jobs=-1,
+            )),
+        ])
+    else:
+        return make_hgb()
+
+
 MODEL_FACTORIES = {
-    "Ridge":    make_ridge,
+    # "Ridge":    make_ridge,  # Disabled: linear models underpredict elite QB outliers
     "HGB":      make_hgb,
     "LightGBM": make_lgb,
+    "RandomForest": make_rf,
+    "XGBoost":      make_xgb,
 }
 
 
@@ -333,17 +386,27 @@ def train_final_model(
     null_frac = pos_df_clean.isnull().mean()
     pos_df_clean = pos_df_clean.drop(columns=null_frac[null_frac > 0.6].index)
 
-    X = pos_df_clean[feature_cols].values
-    y = pos_df_clean[TARGET].values
+    X = pos_df_clean[feature_cols]
+    y = pos_df_clean[TARGET]
+
+    fit_params = {}
+    if position == "QB":
+        fit_params["model__sample_weight"] = y * 100
 
     model = model_fn()
-    model.fit(X, y)
+    model.fit(X, y, **fit_params)
     log.info("  Trained final %s model for %s on %d rows", model_name, position, len(X))
     return model
 
 
 # ── Save model artifacts ───────────────────────────────────────────────────────
 def save_artifacts(position: str, model_name: str, model, feature_cols: list[str]):
+    # Delete existing models for this position so we don't accumulate stale files
+    for p in MODELS_DIR.glob(f"{position}_*.pkl"):
+        p.unlink()
+    for p in MODELS_DIR.glob(f"{position}_*_manifest.json"):
+        p.unlink()
+
     model_path = MODELS_DIR / f"{position}_{model_name.lower()}.pkl"
     joblib.dump(model, model_path)
 
@@ -406,7 +469,7 @@ def main():
             pos_df_with_year = pos_df.copy()
             pos_df_with_year["signing_year"] = df.loc[pos_df.index, "signing_year"]
 
-            oof = loyo_cv(pos_df_with_year, model_fn, feature_cols)
+            oof = loyo_cv(pos_df_with_year, model_fn, feature_cols, position)
             if oof.empty:
                 log.warning("  No OOF predictions for %s %s", position, model_name)
                 continue
