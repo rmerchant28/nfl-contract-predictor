@@ -481,7 +481,11 @@ def main():
 
     # ── Search bar ─────────────────────────────────────────────────────────────
     st.markdown("## 🏈 NFL Contract Predictor")
-    st.markdown("Search for any NFL player to predict their next contract value as a % of the salary cap.")
+    st.markdown(
+        "Predict what an NFL player would earn on a **new free agent contract** "
+        "signed in the upcoming offseason. Enter a player, their position, and the "
+        "contract year — the model uses their stats from the 3 prior seasons."
+    )
 
     col_search, col_pos, col_year = st.columns([3, 1, 1])
 
@@ -505,7 +509,7 @@ def main():
         signing_year = st.selectbox(
             "Contract year",
             options=list(range(2026, 2013, -1)),
-            index=0,
+            index=0,   # defaults to 2026
         )
 
     if not player_name:
@@ -513,11 +517,12 @@ def main():
         st.markdown("#### How it works")
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown("**1. Search a player**\nSelect any QB, WR, RB, or TE from the dropdown.")
+            st.markdown("**1. Search a player**\nSelect any QB, WR, RB, or TE. Only players with at least one veteran contract appear — rookies on their first deal are not included.")
         with c2:
-            st.markdown("**2. Set contract year**\nChoose the year the contract would be signed.")
+            st.markdown("**2. Set contract year**\nDefaults to 2026. The model uses stats from the 3 seasons before the contract year.")
         with c3:
-            st.markdown("**3. See the prediction**\nGet predicted APY, cap %, comparable contracts, and model accuracy.")
+            st.markdown("**3. See the prediction**\nPredicted APY and cap % reflect what the player would earn as a free agent signing a new deal in that offseason.")
+        st.info("💡 Best used for veteran players entering free agency or approaching contract extensions — not for players on rookie deals.")
         st.stop()
 
     # ── Run prediction ─────────────────────────────────────────────────────────
@@ -539,7 +544,26 @@ def main():
     cap               = result["cap_that_year"]
     conf_low, conf_high = result["confidence_range"]
 
-    # ── Hero banner ────────────────────────────────────────────────────────────
+    # ── Low activity warning ───────────────────────────────────────────────────
+    features = result.get("features_used", {})
+    games_mean = features.get("games_mean", None)
+    attempts_mean = features.get("attempts_mean", None)
+
+    # Warn if the player had limited activity — model may overvalue them
+    low_activity = False
+    if position == "QB" and attempts_mean is not None and float(attempts_mean) < 150:
+        st.warning(
+            f"⚠️ **Limited starter data** — {player_name} averaged fewer than 150 pass attempts "
+            f"per season in the lookback window, suggesting backup or part-time role. "
+            f"The model may overestimate their market value since it was trained primarily on starters."
+        )
+        low_activity = True
+    elif position != "QB" and games_mean is not None and float(games_mean) < 10:
+        st.warning(
+            f"⚠️ **Limited playing time** — {player_name} averaged fewer than 10 games "
+            f"per season in the lookback window. Prediction may be less reliable."
+        )
+        low_activity = True
     team_display = f" · {team}" if team else ""
     st.markdown(f"""
     <div class="hero">
