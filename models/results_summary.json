@@ -1,95 +1,95 @@
 {
   "QB": {
     "HGB": {
-      "mae": 1.573,
-      "rmse": 2.925,
-      "n": 428
+      "mae": 1.518,
+      "rmse": 2.87,
+      "n": 483
     },
     "LightGBM": {
-      "mae": 1.555,
-      "rmse": 2.819,
-      "n": 428
+      "mae": 1.496,
+      "rmse": 2.732,
+      "n": 483
     },
     "RandomForest": {
-      "mae": 1.618,
-      "rmse": 2.873,
-      "n": 428
+      "mae": 1.524,
+      "rmse": 2.741,
+      "n": 483
     },
     "XGBoost": {
-      "mae": 1.516,
-      "rmse": 2.751,
-      "n": 428
+      "mae": 1.426,
+      "rmse": 2.605,
+      "n": 483
     }
   },
   "WR": {
     "HGB": {
-      "mae": 1.317,
-      "rmse": 1.75,
-      "n": 339
+      "mae": 1.347,
+      "rmse": 1.834,
+      "n": 396
     },
     "LightGBM": {
-      "mae": 1.266,
-      "rmse": 1.657,
-      "n": 339
+      "mae": 1.305,
+      "rmse": 1.76,
+      "n": 396
     },
     "RandomForest": {
-      "mae": 1.281,
-      "rmse": 1.677,
-      "n": 339
+      "mae": 1.299,
+      "rmse": 1.741,
+      "n": 396
     },
     "XGBoost": {
-      "mae": 1.295,
-      "rmse": 1.671,
-      "n": 339
+      "mae": 1.35,
+      "rmse": 1.793,
+      "n": 396
     }
   },
   "RB": {
     "HGB": {
-      "mae": 0.89,
-      "rmse": 1.347,
-      "n": 172
+      "mae": 0.916,
+      "rmse": 1.371,
+      "n": 187
     },
     "LightGBM": {
-      "mae": 0.931,
-      "rmse": 1.416,
-      "n": 172
+      "mae": 0.911,
+      "rmse": 1.364,
+      "n": 187
     },
     "RandomForest": {
-      "mae": 0.885,
-      "rmse": 1.322,
-      "n": 172
+      "mae": 0.862,
+      "rmse": 1.274,
+      "n": 187
     },
     "XGBoost": {
-      "mae": 0.888,
-      "rmse": 1.314,
-      "n": 172
+      "mae": 0.901,
+      "rmse": 1.291,
+      "n": 187
     }
   },
   "TE": {
     "HGB": {
-      "mae": 1.053,
-      "rmse": 1.398,
-      "n": 206
+      "mae": 1.009,
+      "rmse": 1.327,
+      "n": 231
     },
     "LightGBM": {
-      "mae": 0.997,
-      "rmse": 1.296,
-      "n": 206
+      "mae": 0.972,
+      "rmse": 1.254,
+      "n": 231
     },
     "RandomForest": {
-      "mae": 0.966,
-      "rmse": 1.251,
-      "n": 206
+      "mae": 0.935,
+      "rmse": 1.22,
+      "n": 231
     },
     "XGBoost": {
-      "mae": 0.987,
-      "rmse": 1.273,
-      "n": 206
+      "mae": 0.96,
+      "rmse": 1.246,
+      "n": 231
     }
   },
   "best_models": {
     "QB": "XGBoost",
-    "WR": "LightGBM",
+    "WR": "RandomForest",
     "RB": "RandomForest",
     "TE": "RandomForest"
   }
