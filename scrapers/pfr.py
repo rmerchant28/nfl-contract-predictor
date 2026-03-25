@@ -148,14 +148,45 @@ def _add_player_names(df: pd.DataFrame, id_map: pd.DataFrame) -> pd.DataFrame:
 # ── Seasonal stats ─────────────────────────────────────────────────────────────
 def _get_games_started(years: list[int], id_map: pd.DataFrame) -> pd.DataFrame:
     """
-    Derive a starter proxy from seasonal data.
-    Uses attempts_per_game for QBs and targets_per_game for skill positions.
-    Returns DataFrame with columns: player_id, season, games_started
-    (here games_started = games played, since weekly games column doesn't exist)
+    Derive games_started and snap_pct from weekly offensive snap counts.
+
+    - games_started: weeks where the player ran >= 50% of offensive snaps
+    - snap_pct:      mean offensive snap share across all weeks with snaps
+
+    Returns DataFrame with columns: player_id, season, games_started, snap_pct
+    Falls back to empty DataFrame if weekly data is unavailable.
     """
-    # weekly import_weekly_data doesn't have a reliable 'games' column
-    # Fall back to returning empty so the seasonal 'games' column is used directly
-    return pd.DataFrame()
+    nfl = _import_nfl_data_py()
+    try:
+        weekly = nfl.import_weekly_data(years)
+    except Exception as e:
+        log.warning("import_weekly_data() failed — snap features unavailable: %s", e)
+        return pd.DataFrame()
+
+    if "offense_pct" not in weekly.columns:
+        log.warning("offense_pct missing from weekly data — snap features unavailable")
+        return pd.DataFrame()
+
+    snap_col = "offense_snaps" if "offense_snaps" in weekly.columns else None
+    if snap_col:
+        weekly = weekly[weekly[snap_col] > 0].copy()
+    else:
+        weekly = weekly[weekly["offense_pct"] > 0].copy()
+
+    if weekly.empty or "player_id" not in weekly.columns:
+        return pd.DataFrame()
+
+    agg = (
+        weekly.groupby(["player_id", "season"])
+        .agg(
+            games_started=("offense_pct", lambda x: int((x >= 0.5).sum())),
+            snap_pct=("offense_pct", "mean"),
+        )
+        .reset_index()
+    )
+
+    log.info("  Weekly snap data: %d player-season rows", len(agg))
+    return agg
 
 
 def scrape_passing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
@@ -355,16 +386,41 @@ def build_pre_contract_stats(
         if len(vals) >= 2:
             xs = np.arange(len(vals), dtype=float)
             features[f"{col}_trend"] = float(np.polyfit(xs, vals, 1)[0])
+        # Peak decline: fraction fallen from career-window best to most recent season.
+        # 0.0 = still at peak, 1.0 = produced nothing last year vs. best year.
+        if vals.max() > 0:
+            features[f"{col}_peak_decline"] = float(
+                (vals.max() - vals[-1]) / vals.max()
+            )
 
     # ── Special Feature: Starter Seasons Count ────────────────────────────────
     # explicitly count seasons with starter-level volume
+    last_season = int(subset["season"].max())
+    last_row = subset[subset["season"] == last_season]
+
     if "attempts" in subset.columns:
         features["starter_seasons"] = int((subset["attempts"] >= 250).sum())
+        last_attempts = pd.to_numeric(last_row["attempts"], errors="coerce").fillna(0)
+        last_is_starter = int(last_attempts.values[0] >= 250) if len(last_attempts) else 1
     elif "games_started" in subset.columns:
         features["starter_seasons"] = int((subset["games_started"] >= 8).sum())
+        last_gs = pd.to_numeric(last_row["games_started"], errors="coerce").fillna(0)
+        last_is_starter = int(last_gs.values[0] >= 8) if len(last_gs) else 1
     elif "games" in subset.columns:
-         # Fallback if games_started missing: >8 games played is roughly starter territory
+        # Fallback if games_started missing: >8 games played is roughly starter territory
         features["starter_seasons"] = int((subset["games"] >= 8).sum())
+        last_g = pd.to_numeric(last_row["games"], errors="coerce").fillna(0)
+        last_is_starter = int(last_g.values[0] >= 8) if len(last_g) else 1
+    else:
+        last_is_starter = 1  # can't determine
+
+    # ── Recent Demotion Flag ──────────────────────────────────────────────────
+    # Fires when a player was a starter for 2+ of the last 3 seasons but their
+    # most recent season shows they lost the starting job. This is the key signal
+    # for players like Kyler Murray who need to take below-market-rate deals.
+    features["recent_demotion"] = int(
+        features.get("starter_seasons", 0) >= 2 and last_is_starter == 0
+    )
 
     return features
 

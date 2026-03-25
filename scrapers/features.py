@@ -64,7 +64,7 @@ QB_STAT_COLS = [
     "pass_first_downs", "passing_epa",
     "dakota", "pacr",
     "carries", "rushing_yards", "rushing_tds",
-    "games", "attempts_per_game", "is_starter",
+    "games", "games_started", "snap_pct", "attempts_per_game", "is_starter",
 ]
 
 
@@ -99,7 +99,7 @@ WR_STAT_COLS = [
     "rec_tds", "catch_rate", "rec_first_downs",
     "target_share", "air_yards_share",
     "receiving_epa", "racr", "wopr_x",
-    "games", "targets_per_game",
+    "games", "games_started", "snap_pct", "targets_per_game",
 ]
 
 RB_STAT_COLS = [
@@ -107,7 +107,7 @@ RB_STAT_COLS = [
     "rush_tds", "rush_first_downs", "fumbles",
     "rushing_epa",
     "targets", "receptions", "rec_yards", "rec_tds",
-    "games", "targets_per_game",
+    "games", "games_started", "snap_pct", "targets_per_game",
 ]
 
 TE_STAT_COLS = [
@@ -115,7 +115,7 @@ TE_STAT_COLS = [
     "yards_per_reception", "yards_per_target",
     "rec_tds", "catch_rate",
     "receiving_epa", "target_share",
-    "games", "targets_per_game",
+    "games", "games_started", "snap_pct", "targets_per_game",
 ]
 
 

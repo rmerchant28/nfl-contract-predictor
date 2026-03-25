@@ -165,7 +165,7 @@ def main():
 
     df = build_dataset(
         positions=group_filter,
-        min_year=args.start_year + WINDOW if hasattr(args, "WINDOW") else 2014,
+        min_year=args.start_year,
         max_year=args.end_year,
     )
 
