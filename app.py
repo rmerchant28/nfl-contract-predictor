@@ -251,12 +251,29 @@ def load_results_summary():
 
 
 @st.cache_data(show_spinner=False)
+def _get_active_player_names() -> set:
+    """Players who appeared in any stats file in the last 2 seasons (active)."""
+    active = set()
+    for stat_file in ("pfr_passing", "pfr_receiving", "pfr_rushing"):
+        path = ROOT / "data" / "raw" / f"{stat_file}.csv"
+        if not path.exists():
+            continue
+        df = pd.read_csv(path, usecols=["player_name", "season"])
+        df["season"] = pd.to_numeric(df["season"], errors="coerce")
+        active.update(df[df["season"] >= 2023]["player_name"].dropna().tolist())
+    return active
+
+
+@st.cache_data(show_spinner=False)
 def get_player_list():
-    """Return sorted list of all players in the contracts data."""
+    """Return sorted list of active players (played in 2023 or 2024) in the contracts data."""
     contracts = load_contracts()
     if contracts.empty:
         return []
-    return sorted(contracts["player_name"].dropna().unique().tolist())
+    active = _get_active_player_names()
+    all_players = contracts["player_name"].dropna().unique().tolist()
+    filtered = [p for p in all_players if p in active]
+    return sorted(filtered) if filtered else sorted(all_players)
 
 
 @st.cache_data(show_spinner=False)
