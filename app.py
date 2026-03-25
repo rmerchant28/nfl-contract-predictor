@@ -556,10 +556,12 @@ def main():
     primary, secondary = get_team_colors(team)
     inject_css(primary, secondary)
 
-    predicted_cap_pct = result["predicted_cap_pct"]
-    predicted_apy     = result["predicted_apy"]
-    cap               = result["cap_that_year"]
+    predicted_cap_pct   = result["predicted_cap_pct"]
+    predicted_apy       = result["predicted_apy"]
+    cap                 = result["cap_that_year"]
     conf_low, conf_high = result["confidence_range"]
+    predicted_gtd       = result.get("predicted_guaranteed")
+    predicted_gtd_pct   = result.get("predicted_gtd_pct")
 
     # ── Low activity warning ───────────────────────────────────────────────────
     features = result.get("features_used", {})
@@ -592,14 +594,20 @@ def main():
     """, unsafe_allow_html=True)
 
     # ── Metric row ─────────────────────────────────────────────────────────────
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
         st.metric("Predicted APY", fmt_money(predicted_apy))
     with m2:
         st.metric("Cap %", f"{predicted_cap_pct:.2f}%")
     with m3:
-        st.metric("Confidence range", f"{conf_low:.1f}% – {conf_high:.1f}%")
+        if predicted_gtd is not None:
+            st.metric("Est. Guaranteed", fmt_money(predicted_gtd),
+                      help=f"{predicted_gtd_pct:.1f}% of cap · model-predicted fully guaranteed money")
+        else:
+            st.metric("Est. Guaranteed", "—", help="Retrain models to enable guaranteed money prediction")
     with m4:
+        st.metric("Confidence range", f"{conf_low:.1f}% – {conf_high:.1f}%")
+    with m5:
         results = load_results_summary()
         model_name = result.get("model_used", "—")
         mae = results.get(position, {}).get(model_name, {}).get("mae", None)
@@ -702,7 +710,7 @@ def main():
     st.markdown("---")
     st.caption(
         f"Model: {result.get('model_used', '—')} · "
-        f"Training data: OTC contract history + nfl_data_py stats · "
+        f"Training data: OTC contract history + nflreadpy stats · "
         f"Validated via leave-one-year-out CV · "
         f"Not affiliated with the NFL or any team."
     )

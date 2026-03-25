@@ -73,7 +73,10 @@ DROP_COLS = [
     "inflated_value",
     "position",               # encoded separately per-model
     "peer_rank",              # Leakage: rank is unknown before prediction
+    "guaranteed_pct_cap",     # Second target — drop from APY feature set
 ]
+
+GUARANTEED_TARGET = "guaranteed_pct_cap"
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -114,6 +117,7 @@ def loyo_cv(
     model_fn,
     feature_cols: list[str],
     position: str,
+    target: str = None,
 ) -> pd.DataFrame:
     """
     Leave-one-year-out cross-validation.
@@ -137,10 +141,11 @@ def loyo_cv(
             continue
 
         # Keep as DataFrame/Series so feature names are passed to the model
+        t = target or TARGET
         X_train = train[feature_cols]
-        y_train = train[TARGET]
+        y_train = train[t]
         X_test  = test[feature_cols]
-        y_test  = test[TARGET]
+        y_test  = test[t]
 
         # For QBs, weight samples by their target value (cap %)
         # This forces the model to prioritize accuracy on elite contracts ($50M+)
@@ -590,6 +595,81 @@ def main():
     for pos, name in best_models.items():
         mae = results[pos][name]["mae"]
         log.info("  %s → %s  (MAE %.2f%%)", pos, name, mae)
+
+    # ── Guaranteed money models ────────────────────────────────────────────────
+    log.info("\nTraining guaranteed money models...")
+    gtd_drop = [c for c in DROP_COLS if c != GUARANTEED_TARGET] + [TARGET]
+
+    for position in POSITIONS:
+        pos_df = df[df["position"] == position].copy()
+        pos_df = pos_df[pos_df[GUARANTEED_TARGET].notna()].copy()
+
+        if len(pos_df) < 20:
+            log.warning("  Not enough guaranteed data for %s (%d rows) — skipping.", position, len(pos_df))
+            continue
+
+        gtd_drop_here = [c for c in gtd_drop if c in pos_df.columns]
+        pos_df_clean = pos_df.drop(columns=gtd_drop_here)
+
+        # Drop high-null cols
+        null_frac = pos_df_clean.isnull().mean()
+        pos_df_clean = pos_df_clean.drop(columns=null_frac[null_frac > 0.6].index)
+
+        gtd_feature_cols = [c for c in pos_df_clean.select_dtypes(include="number").columns
+                            if c != GUARANTEED_TARGET]
+
+        if not gtd_feature_cols:
+            log.warning("  No feature cols for guaranteed %s — skipping.", position)
+            continue
+
+        log.info("  %s guaranteed: %d rows, %d features", position, len(pos_df_clean), len(gtd_feature_cols))
+
+        # Simple LOYO to pick best model
+        gtd_results = {}
+        pos_df_clean["signing_year"] = df.loc[pos_df_clean.index, "signing_year"]
+
+        for model_name, model_fn in MODEL_FACTORIES.items():
+            oof = loyo_cv(pos_df_clean, model_fn, gtd_feature_cols, position,
+                          target=GUARANTEED_TARGET)
+            if oof.empty:
+                continue
+            mae  = mean_absolute_error(oof["y_true"], oof["y_pred"]) * 100
+            rmse = root_mean_squared_error(oof["y_true"], oof["y_pred"]) * 100
+            gtd_results[model_name] = {"mae": round(mae, 3), "rmse": round(rmse, 3)}
+            log.info("    %s gtd %s MAE=%.2f%%", position, model_name, mae)
+
+        if not gtd_results:
+            continue
+
+        best_gtd_name = min(gtd_results, key=lambda m: gtd_results[m]["mae"])
+        best_gtd_fn   = MODEL_FACTORIES[best_gtd_name]
+
+        X = pos_df_clean[gtd_feature_cols]
+        y = pos_df_clean[GUARANTEED_TARGET]
+        gtd_model = best_gtd_fn()
+        gtd_model.fit(X, y)
+
+        # Save guaranteed model with _gtd suffix
+        for p in MODELS_DIR.glob(f"{position}_*_gtd.pkl"):
+            p.unlink()
+        for p in MODELS_DIR.glob(f"{position}_*_gtd_manifest.json"):
+            p.unlink()
+
+        gtd_model_name = f"{best_gtd_name.lower()}_gtd"
+        gtd_path = MODELS_DIR / f"{position}_{gtd_model_name}.pkl"
+        joblib.dump(gtd_model, gtd_path)
+        gtd_manifest = {
+            "position":     position,
+            "model_name":   best_gtd_name,
+            "feature_cols": gtd_feature_cols,
+            "target":       GUARANTEED_TARGET,
+        }
+        gtd_manifest_path = MODELS_DIR / f"{position}_{gtd_model_name}_manifest.json"
+        with open(gtd_manifest_path, "w") as f:
+            json.dump(gtd_manifest, f, indent=2)
+
+        log.info("  %s guaranteed → %s (MAE %.2f%%) saved", position, best_gtd_name,
+                 gtd_results[best_gtd_name]["mae"])
 
 
 if __name__ == "__main__":

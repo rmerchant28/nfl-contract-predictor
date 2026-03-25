@@ -362,6 +362,7 @@ def add_cap_percentage(contracts: pd.DataFrame, cap_history: pd.DataFrame) -> pd
         how="left",
     )
     merged["apy_pct_cap"] = merged["apy"] / merged["cap_that_year"]
+    merged["guaranteed_pct_cap"] = merged["guaranteed"] / merged["cap_that_year"]
 
     missing = merged["apy_pct_cap"].isna().sum()
     if missing:

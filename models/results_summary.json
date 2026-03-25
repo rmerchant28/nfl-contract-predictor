@@ -1,95 +1,95 @@
 {
   "QB": {
     "HGB": {
-      "mae": 1.518,
-      "rmse": 2.87,
+      "mae": 1.55,
+      "rmse": 2.992,
       "n": 483
     },
     "LightGBM": {
-      "mae": 1.496,
-      "rmse": 2.732,
+      "mae": 1.507,
+      "rmse": 2.736,
       "n": 483
     },
     "RandomForest": {
-      "mae": 1.524,
-      "rmse": 2.741,
+      "mae": 1.516,
+      "rmse": 2.745,
       "n": 483
     },
     "XGBoost": {
-      "mae": 1.426,
-      "rmse": 2.605,
+      "mae": 1.392,
+      "rmse": 2.562,
       "n": 483
     }
   },
   "WR": {
     "HGB": {
-      "mae": 1.347,
-      "rmse": 1.834,
+      "mae": 1.229,
+      "rmse": 1.673,
       "n": 396
     },
     "LightGBM": {
-      "mae": 1.305,
-      "rmse": 1.76,
+      "mae": 1.221,
+      "rmse": 1.638,
       "n": 396
     },
     "RandomForest": {
-      "mae": 1.299,
-      "rmse": 1.741,
+      "mae": 1.263,
+      "rmse": 1.677,
       "n": 396
     },
     "XGBoost": {
-      "mae": 1.35,
-      "rmse": 1.793,
+      "mae": 1.27,
+      "rmse": 1.684,
       "n": 396
     }
   },
   "RB": {
     "HGB": {
-      "mae": 0.916,
+      "mae": 0.901,
       "rmse": 1.371,
       "n": 187
     },
     "LightGBM": {
-      "mae": 0.911,
+      "mae": 0.901,
       "rmse": 1.364,
       "n": 187
     },
     "RandomForest": {
-      "mae": 0.862,
-      "rmse": 1.274,
+      "mae": 0.855,
+      "rmse": 1.263,
       "n": 187
     },
     "XGBoost": {
-      "mae": 0.901,
-      "rmse": 1.291,
+      "mae": 0.889,
+      "rmse": 1.294,
       "n": 187
     }
   },
   "TE": {
     "HGB": {
-      "mae": 1.009,
-      "rmse": 1.327,
+      "mae": 0.944,
+      "rmse": 1.228,
       "n": 231
     },
     "LightGBM": {
-      "mae": 0.972,
-      "rmse": 1.254,
+      "mae": 0.921,
+      "rmse": 1.186,
       "n": 231
     },
     "RandomForest": {
-      "mae": 0.935,
-      "rmse": 1.22,
+      "mae": 0.899,
+      "rmse": 1.169,
       "n": 231
     },
     "XGBoost": {
-      "mae": 0.96,
-      "rmse": 1.246,
+      "mae": 0.94,
+      "rmse": 1.196,
       "n": 231
     }
   },
   "best_models": {
     "QB": "XGBoost",
-    "WR": "RandomForest",
+    "WR": "LightGBM",
     "RB": "RandomForest",
     "TE": "RandomForest"
   }
