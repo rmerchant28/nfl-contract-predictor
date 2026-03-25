@@ -37,7 +37,7 @@ POSITION_SLUGS = {
 # Minimum APY thresholds — only exclude true minimum/practice squad deals
 # Lowered QB threshold to include backup contracts (rookies are filtered out later by missing stats)
 ROOKIE_APY_THRESHOLD = {
-    "QB":  2_000_000,
+    "QB":  750_000,
     "WR":  2_000_000,
     "RB":  2_000_000,
     "TE":  2_000_000,
