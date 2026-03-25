@@ -270,14 +270,33 @@ def _fetch_player_stats(
         if len(vals) >= 2:
             xs = np.arange(len(vals), dtype=float)
             features[f"{col}_trend"] = float(np.polyfit(xs, vals, 1)[0])
+        if vals.max() > 0:
+            features[f"{col}_peak_decline"] = float(
+                (vals.max() - vals[-1]) / vals.max()
+            )
 
-    # ── Starter Seasons Count ──────────────────────────────────────────────────
+    # ── Starter Seasons Count + Recent Demotion ────────────────────────────────
+    last_season = int(player_stats["season"].max())
+    last_row = player_stats[player_stats["season"] == last_season]
+
     if "attempts" in player_stats.columns:
         features["starter_seasons"] = int((player_stats["attempts"] >= 250).sum())
+        last_attempts = pd.to_numeric(last_row["attempts"], errors="coerce").fillna(0)
+        last_is_starter = int(last_attempts.values[0] >= 250) if len(last_attempts) else 1
     elif "games_started" in player_stats.columns:
         features["starter_seasons"] = int((player_stats["games_started"] >= 8).sum())
+        last_gs = pd.to_numeric(last_row["games_started"], errors="coerce").fillna(0)
+        last_is_starter = int(last_gs.values[0] >= 8) if len(last_gs) else 1
     elif "games" in player_stats.columns:
         features["starter_seasons"] = int((player_stats["games"] >= 8).sum())
+        last_g = pd.to_numeric(last_row["games"], errors="coerce").fillna(0)
+        last_is_starter = int(last_g.values[0] >= 8) if len(last_g) else 1
+    else:
+        last_is_starter = 1
+
+    features["recent_demotion"] = int(
+        features.get("starter_seasons", 0) >= 2 and last_is_starter == 0
+    )
 
     return features
 
@@ -478,8 +497,8 @@ def find_comps(
     Find historical contracts most similar in cap % to the prediction.
     Useful for the Streamlit app's 'comparable contracts' table.
     """
-    # Use processed features file (excludes rookies/no-stats players)
-    contracts_path = ROOT / "data" / "processed" / "model_features.csv"
+    # Use the committed contracts file (model_features.csv is gitignored)
+    contracts_path = ROOT / "data" / "raw" / "contracts_with_cap_pct.csv"
     if not contracts_path.exists():
         return pd.DataFrame()
 
