@@ -1,19 +1,34 @@
-# Main requirements file — used by Streamlit Cloud
-# This is the app environment (venv312 equivalent)
-# For the data pipeline, use requirements-data.txt with venv_data
+# requirements.txt
+# =================
+# Single environment for everything: data pipeline, model training, and app.
+#
+# Install:
+#   python3.12 -m venv venv
+#   source venv/bin/activate
+#   pip install -r requirements.txt
 
+# Core
 pandas>=2.0
 numpy
-scikit-learn
-lightgbm
-streamlit>=1.40.0
-plotly
 requests
 beautifulsoup4
 lxml
 certifi
 joblib
+pyarrow
+
+# NFL data (replaces nfl_data_py — supports 2025+ season data)
+nflreadpy
+polars[rtcompat]
+
+# ML
+scikit-learn
+lightgbm
+xgboost
+
+# App
+streamlit>=1.40.0
+plotly
 matplotlib
 seaborn
 altair>=5.0.0
-xgboost

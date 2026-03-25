@@ -276,17 +276,20 @@ def _fetch_player_stats(
             )
 
     # ── Starter Seasons Count + Recent Demotion ────────────────────────────────
+    # Use rate-based signals so injury-shortened seasons still count.
     last_season = int(player_stats["season"].max())
     last_row = player_stats[player_stats["season"] == last_season]
 
-    if "attempts" in player_stats.columns:
-        features["starter_seasons"] = int((player_stats["attempts"] >= 250).sum())
-        last_attempts = pd.to_numeric(last_row["attempts"], errors="coerce").fillna(0)
-        last_is_starter = int(last_attempts.values[0] >= 250) if len(last_attempts) else 1
+    if "is_starter" in player_stats.columns:
+        # QB path: is_starter = (attempts_per_game >= 20), injury-safe
+        is_starter_col = pd.to_numeric(player_stats["is_starter"], errors="coerce").fillna(0)
+        features["starter_seasons"] = int((is_starter_col >= 1).sum())
+        last_is_starter_vals = pd.to_numeric(last_row["is_starter"], errors="coerce").fillna(0)
+        last_is_starter = int(last_is_starter_vals.values[0] >= 1) if len(last_is_starter_vals) else 1
     elif "games_started" in player_stats.columns:
-        features["starter_seasons"] = int((player_stats["games_started"] >= 8).sum())
+        features["starter_seasons"] = int((player_stats["games_started"] >= 4).sum())
         last_gs = pd.to_numeric(last_row["games_started"], errors="coerce").fillna(0)
-        last_is_starter = int(last_gs.values[0] >= 8) if len(last_gs) else 1
+        last_is_starter = int(last_gs.values[0] >= 4) if len(last_gs) else 1
     elif "games" in player_stats.columns:
         features["starter_seasons"] = int((player_stats["games"] >= 8).sum())
         last_g = pd.to_numeric(last_row["games"], errors="coerce").fillna(0)

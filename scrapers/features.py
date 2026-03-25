@@ -62,7 +62,7 @@ QB_STAT_COLS = [
     "td_pct", "int_pct",
     "sacks_taken", "air_yards", "yac",
     "pass_first_downs", "passing_epa",
-    "dakota", "pacr",
+    "pacr",
     "carries", "rushing_yards", "rushing_tds",
     "games", "games_started", "snap_pct", "attempts_per_game", "is_starter",
 ]
