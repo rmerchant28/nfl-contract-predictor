@@ -51,12 +51,12 @@ def _fix_ssl():
         urllib.request.install_opener(opener)
 
 
-def _import_nfl_data_py():
+def _import_nflreadpy():
     try:
-        import nfl_data_py as nfl
-        return nfl
+        import nflreadpy
+        return nflreadpy
     except ImportError:
-        raise ImportError("nfl_data_py is not installed. Run: pip install nfl_data_py")
+        raise ImportError("nflreadpy is not installed. Run: pip install nflreadpy 'polars[rtcompat]'")
 
 
 # ── Model loading ──────────────────────────────────────────────────────────────
@@ -174,6 +174,134 @@ def _name_key(name: str) -> str:
 #             log.warning("Could not load player ids: %s", e)
 #             _ids_cache = pd.DataFrame()
 #     return _ids_cache
+
+
+# ── Player birth year cache (for age at signing feature) ──────────────────────
+_birth_year_cache: Optional[dict] = None
+
+
+def _get_player_birth_year(player_name: str) -> Optional[int]:
+    """Return birth year for a player using nflreadpy.load_players(), cached per session."""
+    global _birth_year_cache
+    if _birth_year_cache is None:
+        _birth_year_cache = {}
+        try:
+            _fix_ssl()
+            nfl = _import_nflreadpy()
+            players = nfl.load_players().to_pandas()
+            if "birth_date" in players.columns and "display_name" in players.columns:
+                players["birth_year"] = pd.to_datetime(
+                    players["birth_date"], errors="coerce"
+                ).dt.year
+                players["player_name_norm"] = players["display_name"].fillna("").apply(_normalise)
+                _birth_year_cache = (
+                    players.dropna(subset=["birth_year", "player_name_norm"])
+                    .drop_duplicates("player_name_norm")
+                    .set_index("player_name_norm")["birth_year"]
+                    .astype(int)
+                    .to_dict()
+                )
+        except Exception as e:
+            log.warning("Could not load player birth years: %s", e)
+
+    norm = _normalise(player_name)
+    birth_year = _birth_year_cache.get(norm)
+    return int(birth_year) if birth_year else None
+
+
+# ── Quantile model cache (p10/p90 confidence intervals) ───────────────────────
+_quantile_cache: dict = {}
+
+
+def load_quantile_models(position: str) -> tuple:
+    """
+    Load the p10 and p90 quantile models for a position.
+    Returns (low_model, low_manifest, high_model, high_manifest) or four Nones.
+    """
+    if position in _quantile_cache:
+        return _quantile_cache[position]
+
+    low_path  = MODELS_DIR / f"{position}_quantile_low.pkl"
+    high_path = MODELS_DIR / f"{position}_quantile_high.pkl"
+    low_mf    = MODELS_DIR / f"{position}_quantile_low_manifest.json"
+    high_mf   = MODELS_DIR / f"{position}_quantile_high_manifest.json"
+
+    if not (low_path.exists() and high_path.exists() and low_mf.exists() and high_mf.exists()):
+        _quantile_cache[position] = (None, None, None, None)
+        return (None, None, None, None)
+
+    low_model  = joblib.load(low_path)
+    high_model = joblib.load(high_path)
+    with open(low_mf)  as f: low_manifest  = json.load(f)
+    with open(high_mf) as f: high_manifest = json.load(f)
+
+    result = (low_model, low_manifest, high_model, high_manifest)
+    _quantile_cache[position] = result
+    return result
+
+
+# ── Contract years model cache ────────────────────────────────────────────────
+_years_model_cache: dict = {}
+_years_manifest_cache: dict = {}
+
+
+def load_contract_years_model(position: str) -> tuple:
+    """Load the trained contract length model for a position, or (None, None) if unavailable."""
+    if position in _years_model_cache:
+        return _years_model_cache[position], _years_manifest_cache[position]
+
+    model_files = sorted(
+        MODELS_DIR.glob(f"{position}_*_years.pkl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not model_files:
+        return None, None
+
+    model_path    = model_files[0]
+    manifest_path = MODELS_DIR / f"{model_path.stem}_manifest.json"
+    if not manifest_path.exists():
+        return None, None
+
+    model = joblib.load(model_path)
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    _years_model_cache[position]    = model
+    _years_manifest_cache[position] = manifest
+    return model, manifest
+
+
+# ── Guaranteed money model cache ───────────────────────────────────────────────
+_gtd_model_cache: dict = {}
+_gtd_manifest_cache: dict = {}
+
+
+def load_guaranteed_model(position: str) -> tuple:
+    """Load the trained guaranteed money model for a position, or (None, None) if unavailable."""
+    if position in _gtd_model_cache:
+        return _gtd_model_cache[position], _gtd_manifest_cache[position]
+
+    model_files = sorted(
+        MODELS_DIR.glob(f"{position}_*_gtd.pkl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not model_files:
+        return None, None
+
+    model_path = model_files[0]
+    manifest_path = MODELS_DIR / f"{model_path.stem}_manifest.json"
+    if not manifest_path.exists():
+        return None, None
+
+    model = joblib.load(model_path)
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    _gtd_model_cache[position]    = model
+    _gtd_manifest_cache[position] = manifest
+    return model, manifest
 
 
 # ── CSV-based stats cache (reads from data/raw/ — no network calls) ───────────
@@ -438,7 +566,12 @@ def predict_contract(
     # Gather features
     stat_features = _fetch_player_stats(player_name, signing_year, position)
     mkt_features  = _get_market_context(position, signing_year)
-    all_features  = {**stat_features, **mkt_features, **(extra_features or {})}
+
+    # Age at signing
+    birth_year = _get_player_birth_year(player_name)
+    age_features = {"age_at_signing": signing_year - birth_year} if birth_year else {}
+
+    all_features  = {**stat_features, **mkt_features, **age_features, **(extra_features or {})}
 
     # Build feature vector in the exact order the model expects
     feature_vector = []
@@ -452,25 +585,57 @@ def predict_contract(
     # Convert to DataFrame to avoid warnings from tree models expecting feature names
     X = pd.DataFrame([feature_vector], columns=feature_cols)
 
-    # Predict
+    # Predict APY
     predicted_cap_pct = float(model.predict(X)[0])
     predicted_cap_pct = max(0.0, predicted_cap_pct)  # floor at 0
 
     cap = CAP_HISTORY.get(signing_year, CAP_HISTORY[max(CAP_HISTORY)])
     predicted_apy = predicted_cap_pct * cap
 
-    # Rough confidence range (±1 MAE — load from results summary if available)
-    results_path = MODELS_DIR / "results_summary.json"
-    mae_cap_pct = 0.02  # default ±2%
-    if results_path.exists():
-        with open(results_path) as f:
-            summary = json.load(f)
-        model_name = manifest["model_name"]
-        if position in summary and model_name in summary[position]:
-            mae_cap_pct = summary[position][model_name]["mae"] / 100
+    # Confidence interval — prefer quantile regression (asymmetric), fall back to ±MAE
+    low_model, low_manifest, high_model, high_manifest = load_quantile_models(position)
+    if low_model is not None:
+        low_cols  = low_manifest["feature_cols"]
+        high_cols = high_manifest["feature_cols"]
+        X_low  = pd.DataFrame([[all_features.get(c, np.nan) for c in low_cols]],  columns=low_cols)
+        X_high = pd.DataFrame([[all_features.get(c, np.nan) for c in high_cols]], columns=high_cols)
+        confidence_low  = max(0.0, float(low_model.predict(X_low)[0]))
+        confidence_high = float(high_model.predict(X_high)[0])
+        # Ensure high >= point estimate (quantile models can occasionally invert)
+        confidence_high = max(confidence_high, predicted_cap_pct)
+        confidence_interval_method = "quantile"
+    else:
+        # Fallback: symmetric ±MAE
+        results_path = MODELS_DIR / "results_summary.json"
+        mae_cap_pct = 0.02
+        if results_path.exists():
+            with open(results_path) as f:
+                summary = json.load(f)
+            model_name = manifest["model_name"]
+            if position in summary and model_name in summary[position]:
+                mae_cap_pct = summary[position][model_name]["mae"] / 100
+        confidence_low  = max(0.0, predicted_cap_pct - mae_cap_pct)
+        confidence_high = predicted_cap_pct + mae_cap_pct
+        confidence_interval_method = "mae"
 
-    confidence_low  = max(0.0, predicted_cap_pct - mae_cap_pct)
-    confidence_high = predicted_cap_pct + mae_cap_pct
+    # Predict contract length in years (optional)
+    predicted_years = None
+    yrs_model, yrs_manifest = load_contract_years_model(position)
+    if yrs_model is not None:
+        yrs_cols   = yrs_manifest["feature_cols"]
+        X_yrs      = pd.DataFrame([[all_features.get(c, np.nan) for c in yrs_cols]], columns=yrs_cols)
+        predicted_years = max(1.0, round(float(yrs_model.predict(X_yrs)[0]), 1))
+
+    # Predict guaranteed money (optional — model may not exist yet)
+    predicted_gtd_pct = None
+    predicted_gtd     = None
+    gtd_model, gtd_manifest = load_guaranteed_model(position)
+    if gtd_model is not None:
+        gtd_feature_cols = gtd_manifest["feature_cols"]
+        gtd_vector = [all_features.get(col, np.nan) for col in gtd_feature_cols]
+        X_gtd = pd.DataFrame([gtd_vector], columns=gtd_feature_cols)
+        predicted_gtd_pct = max(0.0, float(gtd_model.predict(X_gtd)[0]))
+        predicted_gtd     = round(predicted_gtd_pct * cap)
 
     return {
         "player_name":        player_name,
@@ -483,9 +648,13 @@ def predict_contract(
             round(confidence_low  * 100, 2),
             round(confidence_high * 100, 2),
         ),
+        "predicted_years":    predicted_years,
+        "predicted_gtd_pct":  round(predicted_gtd_pct * 100, 2) if predicted_gtd_pct is not None else None,
+        "predicted_guaranteed": predicted_gtd,
         "features_used":      {k: v for k, v in all_features.items() if k in feature_cols},
         "missing_features":   missing,
         "model_used":         manifest["model_name"],
+        "ci_method":          confidence_interval_method,
     }
 
 

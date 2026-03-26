@@ -165,6 +165,12 @@ def scrape_passing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
         df["attempts_per_game"] = df["attempts"] / df["games"].replace(0, 1)
         df["is_starter"] = (df["attempts_per_game"] >= 20).astype(int)
 
+    if "games" in df.columns:
+        df["games_missed"] = df.apply(
+            lambda r: max(0, (17 if r["season"] >= 2021 else 16) - int(r["games"])),
+            axis=1,
+        )
+
     save_raw(df, "pfr_passing")
     named = df["player_name"].notna().sum() if "player_name" in df.columns else 0
     log.info("  Passing rows: %d (named: %d)", len(df), named)
@@ -197,6 +203,12 @@ def scrape_rushing_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
 
     if "rush_yards" in df.columns and "rush_attempts" in df.columns:
         df["yards_per_carry"] = df["rush_yards"] / df["rush_attempts"]
+
+    if "games" in df.columns:
+        df["games_missed"] = df.apply(
+            lambda r: max(0, (17 if r["season"] >= 2021 else 16) - int(r["games"])),
+            axis=1,
+        )
 
     save_raw(df, "pfr_rushing")
     log.info("  Rushing rows: %d", len(df))
@@ -236,6 +248,12 @@ def scrape_receiving_seasons(years: Optional[list[int]] = None) -> pd.DataFrame:
         df["yards_per_target"] = df["rec_yards"] / df["targets"]
     if "targets" in df.columns and "games" in df.columns:
         df["targets_per_game"] = df["targets"] / df["games"].replace(0, 1)
+
+    if "games" in df.columns:
+        df["games_missed"] = df.apply(
+            lambda r: max(0, (17 if r["season"] >= 2021 else 16) - int(r["games"])),
+            axis=1,
+        )
 
     save_raw(df, "pfr_receiving")
     log.info("  Receiving rows: %d", len(df))

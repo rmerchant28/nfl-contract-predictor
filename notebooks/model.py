@@ -73,7 +73,11 @@ DROP_COLS = [
     "inflated_value",
     "position",               # encoded separately per-model
     "peer_rank",              # Leakage: rank is unknown before prediction
+    "guaranteed_pct_cap",     # Second target — drop from APY feature set
 ]
+
+GUARANTEED_TARGET = "guaranteed_pct_cap"
+YEARS_TARGET = "contract_years"
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -114,6 +118,7 @@ def loyo_cv(
     model_fn,
     feature_cols: list[str],
     position: str,
+    target: str = None,
 ) -> pd.DataFrame:
     """
     Leave-one-year-out cross-validation.
@@ -137,10 +142,11 @@ def loyo_cv(
             continue
 
         # Keep as DataFrame/Series so feature names are passed to the model
+        t = target or TARGET
         X_train = train[feature_cols]
-        y_train = train[TARGET]
+        y_train = train[t]
         X_test  = test[feature_cols]
-        y_test  = test[TARGET]
+        y_test  = test[t]
 
         # For QBs, weight samples by their target value (cap %)
         # This forces the model to prioritize accuracy on elite contracts ($50M+)
@@ -238,6 +244,27 @@ def make_xgb():
                 n_estimators=500,
                 learning_rate=0.05,
                 max_depth=8,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=RANDOM_STATE,
+                n_jobs=-1,
+            )),
+        ])
+    else:
+        return make_hgb()
+
+
+def make_xgb_quantile(alpha: float):
+    """XGBoost quantile regression model for asymmetric confidence intervals."""
+    if HAS_XGB:
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("model", xgb.XGBRegressor(
+                objective="reg:quantileerror",
+                quantile_alpha=alpha,
+                n_estimators=500,
+                learning_rate=0.05,
+                max_depth=6,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=RANDOM_STATE,
@@ -572,6 +599,54 @@ def main():
         ]].sort_values(["position", "signing_year"]).to_csv(oof_path, index=False)
         log.info("Saved OOF predictions → %s", oof_path.name)
 
+    # ── Evaluation diagnostics ─────────────────────────────────────────────────
+    evaluation = {}
+
+    if all_oof:
+        for pos in POSITIONS:
+            if pos not in best_models:
+                continue
+            pos_oof = oof_df[oof_df["position"] == pos].copy()
+            if pos_oof.empty:
+                continue
+
+            evaluation[pos] = {}
+
+            # Tier bias — MAE and mean bias sliced by actual contract tier
+            try:
+                pos_oof["tier"] = pd.qcut(
+                    pos_oof["y_true_pct"],
+                    q=[0, 0.25, 0.5, 0.75, 0.9, 1.0],
+                    labels=["Bottom 25%", "Q25–50%", "Q50–75%", "Q75–90%", "Top 10%"],
+                )
+                tier_stats = (
+                    pos_oof.groupby("tier", observed=True)
+                    .agg(mae=("abs_error_pct", "mean"), bias=("error_pct", "mean"), n=("error_pct", "count"))
+                    .round(3)
+                )
+                evaluation[pos]["tier_bias"] = {
+                    "tiers":  tier_stats.index.tolist(),
+                    "mae":    tier_stats["mae"].tolist(),
+                    "bias":   tier_stats["bias"].tolist(),
+                    "counts": tier_stats["n"].tolist(),
+                }
+            except Exception as e:
+                log.warning("Tier bias failed for %s: %s", pos, e)
+
+            # Residual statistics
+            residuals = pos_oof["error_pct"]
+            evaluation[pos]["residuals"] = {
+                "mean_bias":      round(float(residuals.mean()), 3),
+                "std":            round(float(residuals.std()), 3),
+                "skewness":       round(float(residuals.skew()), 3),
+                "pct_overpredict": round(float((residuals > 0).mean() * 100), 1),
+                "p10":            round(float(residuals.quantile(0.10)), 3),
+                "p90":            round(float(residuals.quantile(0.90)), 3),
+            }
+
+        log.info("Evaluation diagnostics computed for %d positions", len(evaluation))
+
+    if all_oof:
         # Print worst predictions per position for a sanity check
         log.info("\nLargest errors per position (top 3):")
         for pos, grp in oof_df.groupby("position"):
@@ -590,6 +665,229 @@ def main():
     for pos, name in best_models.items():
         mae = results[pos][name]["mae"]
         log.info("  %s → %s  (MAE %.2f%%)", pos, name, mae)
+
+    # ── Quantile regression models (asymmetric confidence intervals) ──────────
+    if HAS_XGB:
+        log.info("\nTraining quantile regression models (p10/p90)...")
+        for position in POSITIONS:
+            if position not in best_models:
+                continue
+            pos_df      = position_df(df, position)
+            feature_cols = get_feature_cols(pos_df)
+            X = pos_df[feature_cols]
+            y = pos_df[TARGET]
+
+            for alpha, suffix in [(0.10, "quantile_low"), (0.90, "quantile_high")]:
+                q_model = make_xgb_quantile(alpha)
+                fit_params = {}
+                if position == "QB":
+                    fit_params["model__sample_weight"] = y * 100
+                q_model.fit(X, y, **fit_params)
+
+                for p in MODELS_DIR.glob(f"{position}_{suffix}.pkl"):
+                    p.unlink()
+                for p in MODELS_DIR.glob(f"{position}_{suffix}_manifest.json"):
+                    p.unlink()
+
+                q_path = MODELS_DIR / f"{position}_{suffix}.pkl"
+                joblib.dump(q_model, q_path)
+                q_manifest = {
+                    "position":     position,
+                    "model_name":   f"XGBoost_Quantile_{int(alpha * 100)}",
+                    "feature_cols": feature_cols,
+                    "target":       TARGET,
+                    "quantile_alpha": alpha,
+                }
+                with open(MODELS_DIR / f"{position}_{suffix}_manifest.json", "w") as f:
+                    json.dump(q_manifest, f, indent=2)
+
+            log.info("  %s: p10/p90 quantile models saved", position)
+
+        # Quantile calibration — LOYO pass to measure actual coverage
+        calibration = {}
+        for position in POSITIONS:
+            if position not in best_models:
+                continue
+            pos_df       = position_df(df, position)
+            feature_cols = get_feature_cols(pos_df)
+            pos_df_wy    = pos_df.copy()
+            pos_df_wy["signing_year"] = df.loc[pos_df.index, "signing_year"]
+
+            oof_low  = loyo_cv(pos_df_wy, lambda: make_xgb_quantile(0.10), feature_cols, position)
+            oof_high = loyo_cv(pos_df_wy, lambda: make_xgb_quantile(0.90), feature_cols, position)
+
+            if oof_low.empty or oof_high.empty or len(oof_low) != len(oof_high):
+                continue
+
+            oof_low  = oof_low.reset_index(drop=True)
+            oof_high = oof_high.reset_index(drop=True)
+            in_interval = (oof_low["y_true"] >= oof_low["y_pred"]) & (oof_low["y_true"] <= oof_high["y_pred"])
+            actual_coverage = round(float(in_interval.mean()), 3)
+
+            calibration[position] = {
+                "nominal_coverage": 0.80,
+                "actual_coverage":  actual_coverage,
+                "n":                len(oof_low),
+            }
+            log.info("  %s quantile calibration: actual coverage=%.1f%% (target 80%%)",
+                     position, actual_coverage * 100)
+
+        for pos, cal in calibration.items():
+            evaluation.setdefault(pos, {})["calibration"] = cal
+    else:
+        log.warning("XGBoost not available — skipping quantile calibration")
+
+    # ── Guaranteed money models ────────────────────────────────────────────────
+    log.info("\nTraining guaranteed money models...")
+    gtd_drop = [c for c in DROP_COLS if c != GUARANTEED_TARGET] + [TARGET]
+
+    for position in POSITIONS:
+        pos_df = df[df["position"] == position].copy()
+        pos_df = pos_df[pos_df[GUARANTEED_TARGET].notna()].copy()
+
+        if len(pos_df) < 20:
+            log.warning("  Not enough guaranteed data for %s (%d rows) — skipping.", position, len(pos_df))
+            continue
+
+        gtd_drop_here = [c for c in gtd_drop if c in pos_df.columns]
+        pos_df_clean = pos_df.drop(columns=gtd_drop_here)
+
+        # Drop high-null cols
+        null_frac = pos_df_clean.isnull().mean()
+        pos_df_clean = pos_df_clean.drop(columns=null_frac[null_frac > 0.6].index)
+
+        gtd_feature_cols = [c for c in pos_df_clean.select_dtypes(include="number").columns
+                            if c != GUARANTEED_TARGET]
+
+        if not gtd_feature_cols:
+            log.warning("  No feature cols for guaranteed %s — skipping.", position)
+            continue
+
+        log.info("  %s guaranteed: %d rows, %d features", position, len(pos_df_clean), len(gtd_feature_cols))
+
+        # Simple LOYO to pick best model
+        gtd_results = {}
+        pos_df_clean["signing_year"] = df.loc[pos_df_clean.index, "signing_year"]
+
+        for model_name, model_fn in MODEL_FACTORIES.items():
+            oof = loyo_cv(pos_df_clean, model_fn, gtd_feature_cols, position,
+                          target=GUARANTEED_TARGET)
+            if oof.empty:
+                continue
+            mae  = mean_absolute_error(oof["y_true"], oof["y_pred"]) * 100
+            rmse = root_mean_squared_error(oof["y_true"], oof["y_pred"]) * 100
+            gtd_results[model_name] = {"mae": round(mae, 3), "rmse": round(rmse, 3)}
+            log.info("    %s gtd %s MAE=%.2f%%", position, model_name, mae)
+
+        if not gtd_results:
+            continue
+
+        best_gtd_name = min(gtd_results, key=lambda m: gtd_results[m]["mae"])
+        best_gtd_fn   = MODEL_FACTORIES[best_gtd_name]
+
+        X = pos_df_clean[gtd_feature_cols]
+        y = pos_df_clean[GUARANTEED_TARGET]
+        gtd_model = best_gtd_fn()
+        gtd_model.fit(X, y)
+
+        # Save guaranteed model with _gtd suffix
+        for p in MODELS_DIR.glob(f"{position}_*_gtd.pkl"):
+            p.unlink()
+        for p in MODELS_DIR.glob(f"{position}_*_gtd_manifest.json"):
+            p.unlink()
+
+        gtd_model_name = f"{best_gtd_name.lower()}_gtd"
+        gtd_path = MODELS_DIR / f"{position}_{gtd_model_name}.pkl"
+        joblib.dump(gtd_model, gtd_path)
+        gtd_manifest = {
+            "position":     position,
+            "model_name":   best_gtd_name,
+            "feature_cols": gtd_feature_cols,
+            "target":       GUARANTEED_TARGET,
+        }
+        gtd_manifest_path = MODELS_DIR / f"{position}_{gtd_model_name}_manifest.json"
+        with open(gtd_manifest_path, "w") as f:
+            json.dump(gtd_manifest, f, indent=2)
+
+        log.info("  %s guaranteed → %s (MAE %.2f%%) saved", position, best_gtd_name,
+                 gtd_results[best_gtd_name]["mae"])
+
+    # ── Contract length (years) models ────────────────────────────────────────
+    log.info("\nTraining contract length (years) models...")
+    yrs_drop = [c for c in DROP_COLS] + [TARGET, GUARANTEED_TARGET]
+    # YEARS_TARGET ("contract_years") is in DROP_COLS but we need it as target here
+
+    for position in POSITIONS:
+        pos_df = df[df["position"] == position].copy()
+        pos_df = pos_df[pos_df[YEARS_TARGET].notna() & (pos_df[YEARS_TARGET] >= 1)].copy()
+
+        if len(pos_df) < 20:
+            log.warning("  Not enough years data for %s (%d rows) — skipping.", position, len(pos_df))
+            continue
+
+        yrs_drop_here = [c for c in yrs_drop if c in pos_df.columns and c != YEARS_TARGET]
+        pos_clean = pos_df.drop(columns=yrs_drop_here)
+
+        # Drop high-null cols
+        null_frac = pos_clean.isnull().mean()
+        pos_clean = pos_clean.drop(columns=null_frac[null_frac > 0.6].index)
+
+        yrs_feature_cols = [c for c in pos_clean.select_dtypes(include="number").columns
+                            if c != YEARS_TARGET]
+        if not yrs_feature_cols:
+            continue
+
+        log.info("  %s years: %d rows, %d features", position, len(pos_clean), len(yrs_feature_cols))
+
+        # LOYO to select best model
+        yrs_results = {}
+        pos_clean_wy = pos_clean.copy()
+        pos_clean_wy["signing_year"] = df.loc[pos_clean.index, "signing_year"]
+        for model_name, model_fn in MODEL_FACTORIES.items():
+            oof = loyo_cv(pos_clean_wy, model_fn, yrs_feature_cols, position, target=YEARS_TARGET)
+            if oof.empty:
+                continue
+            mae  = mean_absolute_error(oof["y_true"], oof["y_pred"])
+            yrs_results[model_name] = round(mae, 3)
+            log.info("    %s years %s MAE=%.2f yrs", position, model_name, mae)
+
+        if not yrs_results:
+            continue
+
+        best_yrs_name = min(yrs_results, key=lambda m: yrs_results[m])
+        best_yrs_fn   = MODEL_FACTORIES[best_yrs_name]
+
+        X = pos_clean[yrs_feature_cols]
+        y = pos_clean[YEARS_TARGET]
+        yrs_model = best_yrs_fn()
+        yrs_model.fit(X, y)
+
+        # Save
+        for p in MODELS_DIR.glob(f"{position}_*_years.pkl"):
+            p.unlink()
+        for p in MODELS_DIR.glob(f"{position}_*_years_manifest.json"):
+            p.unlink()
+
+        yrs_model_name = f"{best_yrs_name.lower()}_years"
+        yrs_path = MODELS_DIR / f"{position}_{yrs_model_name}.pkl"
+        joblib.dump(yrs_model, yrs_path)
+        yrs_manifest_data = {
+            "position":     position,
+            "model_name":   best_yrs_name,
+            "feature_cols": yrs_feature_cols,
+            "target":       YEARS_TARGET,
+        }
+        with open(MODELS_DIR / f"{position}_{yrs_model_name}_manifest.json", "w") as f:
+            json.dump(yrs_manifest_data, f, indent=2)
+
+        evaluation.setdefault(position, {})["contract_years_mae"] = yrs_results[best_yrs_name]
+        log.info("  %s contract years → %s (MAE %.2f yrs) saved",
+                 position, best_yrs_name, yrs_results[best_yrs_name])
+
+    # ── Save evaluation.json ───────────────────────────────────────────────────
+    with open(MODELS_DIR / "evaluation.json", "w") as f:
+        json.dump(evaluation, f, indent=2)
+    log.info("Saved evaluation diagnostics → evaluation.json")
 
 
 if __name__ == "__main__":

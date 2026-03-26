@@ -44,14 +44,42 @@ def _numeric(df: pd.DataFrame) -> pd.DataFrame:
 
 def _age_at_signing(contracts: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute player age at time of signing if birth year is available.
-    PFR player pages carry DOB — for now we leave this as a placeholder
-    and populate it after player-page scraping.
+    Compute player age at time of signing using birth dates from nflreadpy.
+    Falls back to NaN if the player can't be matched or the library is unavailable.
     """
     if "birth_year" in contracts.columns:
         contracts["age_at_signing"] = contracts["signing_year"] - contracts["birth_year"]
-    else:
+        return contracts
+
+    try:
+        import nflreadpy
+        players = nflreadpy.load_players().to_pandas()
+        if "birth_date" in players.columns and "display_name" in players.columns:
+            players["birth_year"] = pd.to_datetime(
+                players["birth_date"], errors="coerce"
+            ).dt.year
+            players["player_name_norm"] = (
+                players["display_name"].fillna("").apply(normalise_name)
+            )
+            birth_map = (
+                players.dropna(subset=["birth_year", "player_name_norm"])
+                .drop_duplicates("player_name_norm")
+                .set_index("player_name_norm")["birth_year"]
+            )
+            contracts = contracts.copy()
+            birth_years = contracts["player_name_norm"].map(birth_map)
+            contracts["age_at_signing"] = (
+                contracts["signing_year"].astype(float) - birth_years.astype(float)
+            )
+            matched = contracts["age_at_signing"].notna().sum()
+            log.info("  Age at signing: matched %d / %d contracts", matched, len(contracts))
+        else:
+            log.warning("_age_at_signing: nflreadpy players missing birth_date or display_name")
+            contracts["age_at_signing"] = np.nan
+    except Exception as e:
+        log.warning("Could not load player birth years from nflreadpy: %s", e)
         contracts["age_at_signing"] = np.nan
+
     return contracts
 
 
@@ -64,7 +92,7 @@ QB_STAT_COLS = [
     "pass_first_downs", "passing_epa",
     "pacr",
     "carries", "rushing_yards", "rushing_tds",
-    "games", "games_started", "snap_pct", "attempts_per_game", "is_starter",
+    "games", "games_missed", "games_started", "snap_pct", "attempts_per_game", "is_starter",
 ]
 
 
@@ -99,7 +127,7 @@ WR_STAT_COLS = [
     "rec_tds", "catch_rate", "rec_first_downs",
     "target_share", "air_yards_share",
     "receiving_epa", "racr", "wopr_x",
-    "games", "games_started", "snap_pct", "targets_per_game",
+    "games", "games_missed", "games_started", "snap_pct", "targets_per_game",
 ]
 
 RB_STAT_COLS = [
@@ -107,7 +135,7 @@ RB_STAT_COLS = [
     "rush_tds", "rush_first_downs", "fumbles",
     "rushing_epa",
     "targets", "receptions", "rec_yards", "rec_tds",
-    "games", "games_started", "snap_pct", "targets_per_game",
+    "games", "games_missed", "games_started", "snap_pct", "targets_per_game",
 ]
 
 TE_STAT_COLS = [
@@ -115,7 +143,7 @@ TE_STAT_COLS = [
     "yards_per_reception", "yards_per_target",
     "rec_tds", "catch_rate",
     "receiving_epa", "target_share",
-    "games", "games_started", "snap_pct", "targets_per_game",
+    "games", "games_missed", "games_started", "snap_pct", "targets_per_game",
 ]
 
 
