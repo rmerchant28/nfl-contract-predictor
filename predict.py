@@ -209,6 +209,69 @@ def _get_player_birth_year(player_name: str) -> Optional[int]:
     return int(birth_year) if birth_year else None
 
 
+# ── Quantile model cache (p10/p90 confidence intervals) ───────────────────────
+_quantile_cache: dict = {}
+
+
+def load_quantile_models(position: str) -> tuple:
+    """
+    Load the p10 and p90 quantile models for a position.
+    Returns (low_model, low_manifest, high_model, high_manifest) or four Nones.
+    """
+    if position in _quantile_cache:
+        return _quantile_cache[position]
+
+    low_path  = MODELS_DIR / f"{position}_quantile_low.pkl"
+    high_path = MODELS_DIR / f"{position}_quantile_high.pkl"
+    low_mf    = MODELS_DIR / f"{position}_quantile_low_manifest.json"
+    high_mf   = MODELS_DIR / f"{position}_quantile_high_manifest.json"
+
+    if not (low_path.exists() and high_path.exists() and low_mf.exists() and high_mf.exists()):
+        _quantile_cache[position] = (None, None, None, None)
+        return (None, None, None, None)
+
+    low_model  = joblib.load(low_path)
+    high_model = joblib.load(high_path)
+    with open(low_mf)  as f: low_manifest  = json.load(f)
+    with open(high_mf) as f: high_manifest = json.load(f)
+
+    result = (low_model, low_manifest, high_model, high_manifest)
+    _quantile_cache[position] = result
+    return result
+
+
+# ── Contract years model cache ────────────────────────────────────────────────
+_years_model_cache: dict = {}
+_years_manifest_cache: dict = {}
+
+
+def load_contract_years_model(position: str) -> tuple:
+    """Load the trained contract length model for a position, or (None, None) if unavailable."""
+    if position in _years_model_cache:
+        return _years_model_cache[position], _years_manifest_cache[position]
+
+    model_files = sorted(
+        MODELS_DIR.glob(f"{position}_*_years.pkl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not model_files:
+        return None, None
+
+    model_path    = model_files[0]
+    manifest_path = MODELS_DIR / f"{model_path.stem}_manifest.json"
+    if not manifest_path.exists():
+        return None, None
+
+    model = joblib.load(model_path)
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    _years_model_cache[position]    = model
+    _years_manifest_cache[position] = manifest
+    return model, manifest
+
+
 # ── Guaranteed money model cache ───────────────────────────────────────────────
 _gtd_model_cache: dict = {}
 _gtd_manifest_cache: dict = {}
@@ -529,18 +592,39 @@ def predict_contract(
     cap = CAP_HISTORY.get(signing_year, CAP_HISTORY[max(CAP_HISTORY)])
     predicted_apy = predicted_cap_pct * cap
 
-    # Rough confidence range (±1 MAE — load from results summary if available)
-    results_path = MODELS_DIR / "results_summary.json"
-    mae_cap_pct = 0.02  # default ±2%
-    if results_path.exists():
-        with open(results_path) as f:
-            summary = json.load(f)
-        model_name = manifest["model_name"]
-        if position in summary and model_name in summary[position]:
-            mae_cap_pct = summary[position][model_name]["mae"] / 100
+    # Confidence interval — prefer quantile regression (asymmetric), fall back to ±MAE
+    low_model, low_manifest, high_model, high_manifest = load_quantile_models(position)
+    if low_model is not None:
+        low_cols  = low_manifest["feature_cols"]
+        high_cols = high_manifest["feature_cols"]
+        X_low  = pd.DataFrame([[all_features.get(c, np.nan) for c in low_cols]],  columns=low_cols)
+        X_high = pd.DataFrame([[all_features.get(c, np.nan) for c in high_cols]], columns=high_cols)
+        confidence_low  = max(0.0, float(low_model.predict(X_low)[0]))
+        confidence_high = float(high_model.predict(X_high)[0])
+        # Ensure high >= point estimate (quantile models can occasionally invert)
+        confidence_high = max(confidence_high, predicted_cap_pct)
+        confidence_interval_method = "quantile"
+    else:
+        # Fallback: symmetric ±MAE
+        results_path = MODELS_DIR / "results_summary.json"
+        mae_cap_pct = 0.02
+        if results_path.exists():
+            with open(results_path) as f:
+                summary = json.load(f)
+            model_name = manifest["model_name"]
+            if position in summary and model_name in summary[position]:
+                mae_cap_pct = summary[position][model_name]["mae"] / 100
+        confidence_low  = max(0.0, predicted_cap_pct - mae_cap_pct)
+        confidence_high = predicted_cap_pct + mae_cap_pct
+        confidence_interval_method = "mae"
 
-    confidence_low  = max(0.0, predicted_cap_pct - mae_cap_pct)
-    confidence_high = predicted_cap_pct + mae_cap_pct
+    # Predict contract length in years (optional)
+    predicted_years = None
+    yrs_model, yrs_manifest = load_contract_years_model(position)
+    if yrs_model is not None:
+        yrs_cols   = yrs_manifest["feature_cols"]
+        X_yrs      = pd.DataFrame([[all_features.get(c, np.nan) for c in yrs_cols]], columns=yrs_cols)
+        predicted_years = max(1.0, round(float(yrs_model.predict(X_yrs)[0]), 1))
 
     # Predict guaranteed money (optional — model may not exist yet)
     predicted_gtd_pct = None
@@ -564,11 +648,13 @@ def predict_contract(
             round(confidence_low  * 100, 2),
             round(confidence_high * 100, 2),
         ),
+        "predicted_years":    predicted_years,
         "predicted_gtd_pct":  round(predicted_gtd_pct * 100, 2) if predicted_gtd_pct is not None else None,
         "predicted_guaranteed": predicted_gtd,
         "features_used":      {k: v for k, v in all_features.items() if k in feature_cols},
         "missing_features":   missing,
         "model_used":         manifest["model_name"],
+        "ci_method":          confidence_interval_method,
     }
 
 

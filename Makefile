@@ -6,8 +6,9 @@
 # Usage:
 #   make setup        — create venv and install all dependencies
 #   make data         — run the full data pipeline
-#   make model        — train models
+#   make model        — train all models (APY, guaranteed, contract years, quantile)
 #   make app          — launch Streamlit app
+#   make test         — run unit tests
 #   make all          — data → model (then run 'make app' separately)
 #   make clean        — remove cached data (keeps raw CSVs and models)
 #   make clean-all    — remove all generated data including CSVs and models
@@ -18,8 +19,9 @@ START_YEAR ?= 2015
 VENV   = venv
 PYTHON = $(VENV)/bin/python
 PIP    = $(VENV)/bin/pip
+PYTEST = $(VENV)/bin/pytest
 
-.PHONY: setup data data-contracts-only data-features-only model app all clean clean-all help
+.PHONY: setup data data-contracts-only data-features-only model app test test-v all clean clean-all help
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
@@ -28,11 +30,13 @@ setup:
 	python3.12 -m venv $(VENV)
 	$(PIP) install --upgrade pip setuptools wheel
 	$(PIP) install -r requirements.txt
+	$(PIP) install pytest
 	@echo ""
 	@echo "Setup complete. Next steps:"
 	@echo "  make data     — collect data"
 	@echo "  make model    — train models"
 	@echo "  make app      — launch app"
+	@echo "  make test     — run tests"
 
 # ── Pipeline ───────────────────────────────────────────────────────────────────
 
@@ -53,15 +57,26 @@ data-features-only:
 # ── Modelling ──────────────────────────────────────────────────────────────────
 
 model:
-	@echo "Training models..."
+	@echo "Training models (APY, guaranteed, contract years, quantile)..."
 	$(PYTHON) notebooks/model.py
 	@echo "Models saved to models/"
+	@echo "Evaluation diagnostics saved to models/evaluation.json"
 
 # ── App ────────────────────────────────────────────────────────────────────────
 
 app:
 	@echo "Starting Streamlit app..."
 	$(VENV)/bin/streamlit run app.py
+
+# ── Tests ──────────────────────────────────────────────────────────────────────
+
+test:
+	@echo "Running tests..."
+	$(PYTEST) tests/
+
+test-v:
+	@echo "Running tests (verbose)..."
+	$(PYTEST) tests/ -v
 
 # ── Combined ───────────────────────────────────────────────────────────────────
 
@@ -75,7 +90,8 @@ clean:
 	@echo "Clearing cache and processed data..."
 	rm -rf data/.cache/
 	rm -rf data/processed/
-	rm -rf __pycache__/ scrapers/__pycache__/ notebooks/__pycache__/
+	rm -rf __pycache__/ scrapers/__pycache__/ notebooks/__pycache__/ tests/__pycache__/
+	rm -rf .pytest_cache/
 	@echo "Done. Raw CSVs and models preserved."
 
 clean-all: clean
@@ -101,15 +117,20 @@ help:
 	@echo "  make data-features-only             Rebuild features from existing CSVs"
 	@echo ""
 	@echo "Modelling:"
-	@echo "  make model                          Train all models, save to models/"
+	@echo "  make model                          Train all models (APY, guaranteed, years, quantile)"
+	@echo "                                      Saves evaluation.json with calibration + residual diagnostics"
 	@echo ""
 	@echo "App:"
 	@echo "  make app                            Launch Streamlit app at localhost:8501"
+	@echo ""
+	@echo "Tests:"
+	@echo "  make test                           Run all unit tests"
+	@echo "  make test-v                         Run tests with verbose output"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make all                            Run data pipeline then train models"
 	@echo ""
 	@echo "Cleanup:"
-	@echo "  make clean                          Clear cache and processed files"
+	@echo "  make clean                          Clear cache, processed files, and pycache"
 	@echo "  make clean-all                      Remove all generated data and model files"
 	@echo ""
