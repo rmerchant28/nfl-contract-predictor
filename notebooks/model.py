@@ -721,16 +721,29 @@ def main():
 
             oof_low  = oof_low.reset_index(drop=True)
             oof_high = oof_high.reset_index(drop=True)
-            in_interval = (oof_low["y_true"] >= oof_low["y_pred"]) & (oof_low["y_true"] <= oof_high["y_pred"])
+            y_true   = oof_low["y_true"].values
+            q_low    = oof_low["y_pred"].values
+            q_high   = oof_high["y_pred"].values
+
+            in_interval = (y_true >= q_low) & (y_true <= q_high)
             actual_coverage = round(float(in_interval.mean()), 3)
+
+            # ── CQR correction ─────────────────────────────────────────────
+            # Conformity score for each sample: how far outside the interval
+            # the actual value fell (negative = already covered, positive = missed)
+            scores = np.maximum(q_low - y_true, y_true - q_high)
+            # 80th percentile of scores → the smallest expansion that achieves
+            # 80% coverage on held-out data (statistical guarantee via CQR)
+            cqr_correction = float(np.quantile(scores, 0.80))
 
             calibration[position] = {
                 "nominal_coverage": 0.80,
                 "actual_coverage":  actual_coverage,
+                "cqr_correction":   round(cqr_correction, 5),
                 "n":                len(oof_low),
             }
-            log.info("  %s quantile calibration: actual coverage=%.1f%% (target 80%%)",
-                     position, actual_coverage * 100)
+            log.info("  %s quantile calibration: raw coverage=%.1f%%  CQR correction=%.4f",
+                     position, actual_coverage * 100, cqr_correction)
 
         for pos, cal in calibration.items():
             evaluation.setdefault(pos, {})["calibration"] = cal

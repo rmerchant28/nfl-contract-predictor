@@ -209,6 +209,30 @@ def _get_player_birth_year(player_name: str) -> Optional[int]:
     return int(birth_year) if birth_year else None
 
 
+# ── CQR correction cache ───────────────────────────────────────────────────────
+_cqr_cache: dict = {}
+
+
+def _get_cqr_correction(position: str) -> float:
+    """
+    Load the Conformalized Quantile Regression correction for a position from
+    evaluation.json.  Returns 0.0 if the file or key is missing (safe fallback).
+    """
+    if position in _cqr_cache:
+        return _cqr_cache[position]
+    eval_path = MODELS_DIR / "evaluation.json"
+    correction = 0.0
+    if eval_path.exists():
+        try:
+            with open(eval_path) as f:
+                ev = json.load(f)
+            correction = float(ev.get(position, {}).get("calibration", {}).get("cqr_correction", 0.0))
+        except Exception as e:
+            log.warning("Could not load CQR correction for %s: %s", position, e)
+    _cqr_cache[position] = correction
+    return correction
+
+
 # ── Quantile model cache (p10/p90 confidence intervals) ───────────────────────
 _quantile_cache: dict = {}
 
@@ -599,11 +623,18 @@ def predict_contract(
         high_cols = high_manifest["feature_cols"]
         X_low  = pd.DataFrame([[all_features.get(c, np.nan) for c in low_cols]],  columns=low_cols)
         X_high = pd.DataFrame([[all_features.get(c, np.nan) for c in high_cols]], columns=high_cols)
-        confidence_low  = max(0.0, float(low_model.predict(X_low)[0]))
-        confidence_high = float(high_model.predict(X_high)[0])
+        raw_low  = float(low_model.predict(X_low)[0])
+        raw_high = float(high_model.predict(X_high)[0])
+
+        # Apply CQR correction: shift bounds outward by the conformity quantile
+        # computed during LOYO CV.  This gives a statistical ~80% coverage guarantee
+        # rather than just hoping the raw quantile model lands at 80%.
+        correction = _get_cqr_correction(position)
+        confidence_low  = max(0.0, raw_low  - correction)
+        confidence_high = raw_high + correction
         # Ensure high >= point estimate (quantile models can occasionally invert)
         confidence_high = max(confidence_high, predicted_cap_pct)
-        confidence_interval_method = "quantile"
+        confidence_interval_method = "cqr"
     else:
         # Fallback: symmetric ±MAE
         results_path = MODELS_DIR / "results_summary.json"

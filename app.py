@@ -512,9 +512,12 @@ def main():
                       help="Retrain models to enable guaranteed money prediction")
     with m4:
         ci_method = result.get("ci_method", "mae")
-        ci_help = ("10th–90th percentile from quantile regression."
-                   if ci_method == "quantile"
-                   else "Symmetric ±MAE fallback. Retrain to enable quantile intervals.")
+        if ci_method == "cqr":
+            ci_help = "Conformalized Quantile Regression — statistically calibrated 80% coverage interval."
+        elif ci_method == "quantile":
+            ci_help = "10th–90th percentile from quantile regression (uncalibrated)."
+        else:
+            ci_help = "Symmetric ±MAE fallback. Retrain models to enable calibrated intervals."
         st.metric("Confidence range", f"{conf_low:.1f}% – {conf_high:.1f}%", help=ci_help)
     with m5:
         results_summary = load_results_summary()

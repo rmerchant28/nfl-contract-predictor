@@ -147,9 +147,14 @@ def get_seasons(player_name, position, signing_year):
 
     def filt(df):
         if df.empty or "player_name_norm" not in df.columns: return pd.DataFrame()
-        mask = (df["player_name_norm"] == pn)
-        if "name_key" in df.columns: mask = mask | (df["name_key"] == pk)
-        return df[mask & df["season"].isin(seasons)].copy()
+        # Try exact normalised name first; only fall back to name_key if nothing found.
+        # Using OR caused false positives (e.g. "a.brown" matching A.J. Brown AND Amon-Ra St. Brown).
+        exact = df[(df["player_name_norm"] == pn) & df["season"].isin(seasons)]
+        if not exact.empty:
+            return exact.copy()
+        if "name_key" in df.columns:
+            return df[(df["name_key"] == pk) & df["season"].isin(seasons)].copy()
+        return pd.DataFrame()
 
     if position == "QB":
         raw = filt(load_stat_csv("passing"))
@@ -298,7 +303,14 @@ def stats_table(df, position, signing_year):
         for col, lbl in dcols:
             r[lbl] = fmt_val(col, row.get(col))
         rows.append(r)
-    avg = {"Season": f"{signing_year-3}–{signing_year-1} avg"}
+    seasons_present = sorted(df["season"].dropna().astype(int).unique())
+    if len(seasons_present) >= 2:
+        avg_label = f"{seasons_present[0]}–{seasons_present[-1]} avg"
+    elif len(seasons_present) == 1:
+        avg_label = f"{seasons_present[0]} avg"
+    else:
+        avg_label = "avg"
+    avg = {"Season": avg_label}
     for col, lbl in dcols:
         if col in df.columns:
             vals = pd.to_numeric(df[col], errors="coerce").dropna()
