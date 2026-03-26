@@ -79,20 +79,21 @@ The model trains three outputs per position:
 | `guaranteed_pct_cap` | `_{model}_gtd.pkl` | Guaranteed money as % of cap |
 | `contract_years` | `_{model}_years.pkl` | Expected contract length in years |
 
-Quantile regression models (XGBoost `reg:quantileerror` at p10/p90) are also trained per position to produce **data-driven confidence intervals** that narrow for predictable players and widen for volatile ones:
+Quantile regression models (XGBoost `reg:quantileerror` at p10/p90) are trained per position and then **conformalized** using leave-one-year-out residuals (Conformalized Quantile Regression, CQR). This produces confidence intervals with a statistical ~80% coverage guarantee rather than just hoping the raw quantile model lands there.
 
 | File | Description |
 |------|-------------|
-| `{POS}_quantile_low.pkl` | p10 boundary |
-| `{POS}_quantile_high.pkl` | p90 boundary |
+| `{POS}_quantile_low.pkl` | Raw p10 boundary |
+| `{POS}_quantile_high.pkl` | Raw p90 boundary |
+| `evaluation.json` → `calibration.cqr_correction` | Per-position shift applied at inference |
 
-Falls back to ±MAE symmetric intervals if quantile models are unavailable.
+At prediction time: `ci_low = raw_p10 − correction`, `ci_high = raw_p90 + correction`. Falls back to ±MAE symmetric intervals if quantile models are unavailable.
 
 ## Model evaluation
 
 `make model` writes `models/evaluation.json` with per-position diagnostics:
 
-- **Quantile calibration** — fraction of actual values falling within the p10/p90 band (target ≈ 80%)
+- **Quantile calibration** — fraction of actual values falling within the raw p10/p90 band, plus the `cqr_correction` value used to shift bounds at inference to achieve ~80% coverage
 - **Tier bias** — MAE and mean signed error sliced by APY percentile tier (Bottom 25%, Q25–50%, Q50–75%, Q75–90%, Top 10%)
 - **Residual analysis** — out-of-fold error distribution (mean bias, std, skewness, % overpredicted)
 - **Contract years MAE** — accuracy of the years prediction in years

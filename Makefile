@@ -57,10 +57,10 @@ data-features-only:
 # ── Modelling ──────────────────────────────────────────────────────────────────
 
 model:
-	@echo "Training models (APY, guaranteed, contract years, quantile)..."
+	@echo "Training models (APY, guaranteed, contract years, quantile + CQR calibration)..."
 	$(PYTHON) notebooks/model.py
 	@echo "Models saved to models/"
-	@echo "Evaluation diagnostics saved to models/evaluation.json"
+	@echo "Evaluation diagnostics saved to models/evaluation.json (includes CQR corrections)"
 
 # ── App ────────────────────────────────────────────────────────────────────────
 
@@ -117,8 +117,8 @@ help:
 	@echo "  make data-features-only             Rebuild features from existing CSVs"
 	@echo ""
 	@echo "Modelling:"
-	@echo "  make model                          Train all models (APY, guaranteed, years, quantile)"
-	@echo "                                      Saves evaluation.json with calibration + residual diagnostics"
+	@echo "  make model                          Train all models (APY, guaranteed, years, quantile + CQR)"
+	@echo "                                      Saves evaluation.json with CQR corrections + residual diagnostics"
 	@echo ""
 	@echo "App:"
 	@echo "  make app                            Launch Streamlit app at localhost:8501"
