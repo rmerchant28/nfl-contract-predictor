@@ -25,6 +25,10 @@ scikit-learn
 seaborn
 xgboost
 
+# Testing
+pytest
+pytest-json-report
+
 # App
 plotly
 streamlit>=1.40.0
