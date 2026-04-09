@@ -67,7 +67,9 @@ Additional signals:
 - `snap_pct` — mean offensive snap share from weekly snap count data
 - `gap_years` — seasons since last active (recency penalty)
 
-**5. Market context** — top contract at position that year, years since a record deal was set.
+**5. Market context** — computed from prior signing years only to prevent target leakage:
+  - `top_contract_pct` — max APY % cap across all prior years at same position
+  - `years_since_reset` — how many seasons since that record was set (0 if record set this year)
 
 ## Prediction targets
 
@@ -79,7 +81,7 @@ The model trains three outputs per position:
 | `guaranteed_pct_cap` | `_{model}_gtd.pkl` | Guaranteed money as % of cap |
 | `contract_years` | `_{model}_years.pkl` | Expected contract length in years |
 
-Quantile regression models (XGBoost `reg:quantileerror` at p10/p90) are trained per position and then **conformalized** using leave-one-year-out residuals (Conformalized Quantile Regression, CQR). This produces confidence intervals with a statistical ~80% coverage guarantee rather than just hoping the raw quantile model lands there.
+Quantile regression models (XGBoost `reg:quantileerror` at p10/p90) are trained per position and then **conformalized** using a held-out calibration fold (Conformalized Quantile Regression, CQR). This produces confidence intervals with a statistical ~80% coverage guarantee validated by Romano et al. finite-sample quantile correction.
 
 | File | Description |
 |------|-------------|
@@ -152,7 +154,7 @@ One model per position, selected by lowest leave-one-year-out (LOYO) MAE. The sa
 
 ## Tests
 
-86 unit tests, no network calls or trained models required.
+92 unit tests, no network calls or trained models required.
 
 ```bash
 make test           # run all tests
@@ -163,7 +165,7 @@ Coverage:
 - `test_utils.py` — money/pct cleaning, name normalisation, position mapping (27 tests)
 - `test_pfr.py` — name key generation, rolling stat aggregation, peak_decline, gap_years, starter tracking, demotion flag, window slicing, trend direction (25 tests)
 - `test_overthecap.py` — cap percentage computation, guaranteed pct, null cap year (5 tests)
-- `test_features.py` — age_at_signing with birth_year column and nflreadpy mocking (5 tests)
+- `test_features.py` — age_at_signing with birth_year column and nflreadpy mocking; market context prior-year isolation (11 tests)
 - `test_predict.py` — name normalisation, name key, find_comps filtering/ordering/formatting (19 tests)
 
 ## Data sources

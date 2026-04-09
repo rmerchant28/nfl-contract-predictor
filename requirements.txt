@@ -7,28 +7,28 @@
 #   source venv/bin/activate
 #   pip install -r requirements.txt
 
-# Core
-pandas>=2.0
-numpy
-requests
+# Core data processing
+altair>=5.0.0
 beautifulsoup4
-lxml
 certifi
 joblib
+lxml
+numpy
+pandas>=2.0
 pyarrow
+requests
 
-# NFL data (replaces nfl_data_py — supports 2025+ season data)
-nflreadpy
-polars[rtcompat]
-
-# ML
-scikit-learn
+# ML and analytics
 lightgbm
+matplotlib
+scikit-learn
+seaborn
 xgboost
 
 # App
-streamlit>=1.40.0
 plotly
-matplotlib
-seaborn
-altair>=5.0.0
+streamlit>=1.40.0
+
+# NFL data (supports 2025+ season data)
+nflreadpy
+polars[rtcompat]
