@@ -148,13 +148,7 @@ def loyo_cv(
         X_test  = test[feature_cols]
         y_test  = test[t]
 
-        # For QBs, weight samples by their target value (cap %)
-        # This forces the model to prioritize accuracy on elite contracts ($50M+)
-        # over minimum salary contracts ($2M), fixing the underprediction of stars.
         fit_params = {}
-        if position == "QB":
-            # Apply sample weighting to focus on elite contracts
-            fit_params["model__sample_weight"] = y_train * 100
 
         model = model_fn()
         model.fit(X_train, y_train, **fit_params)
@@ -416,12 +410,8 @@ def train_final_model(
     X = pos_df_clean[feature_cols]
     y = pos_df_clean[TARGET]
 
-    fit_params = {}
-    if position == "QB":
-        fit_params["model__sample_weight"] = y * 100
-
     model = model_fn()
-    model.fit(X, y, **fit_params)
+    model.fit(X, y)
     log.info("  Trained final %s model for %s on %d rows", model_name, position, len(X))
     return model
 
@@ -679,10 +669,7 @@ def main():
 
             for alpha, suffix in [(0.10, "quantile_low"), (0.90, "quantile_high")]:
                 q_model = make_xgb_quantile(alpha)
-                fit_params = {}
-                if position == "QB":
-                    fit_params["model__sample_weight"] = y * 100
-                q_model.fit(X, y, **fit_params)
+                q_model.fit(X, y)
 
                 for p in MODELS_DIR.glob(f"{position}_{suffix}.pkl"):
                     p.unlink()
@@ -703,47 +690,76 @@ def main():
 
             log.info("  %s: p10/p90 quantile models saved", position)
 
-        # Quantile calibration — LOYO pass to measure actual coverage
+        # Quantile calibration — held-out calibration fold (proper CQR)
+        #
+        # We reserve the most recent CAL_YEARS years as a calibration set:
+        #   - Fit quantile models on all earlier years
+        #   - Compute conformity scores on the held-out years
+        #   - Derive the CQR correction from those scores
+        #
+        # This satisfies the exchangeability assumption required by CQR
+        # (Romano, Patterson & Candès, 2019) because the calibration predictions
+        # come from a single fixed model, not a pool of LOYO fold models.
+        CAL_YEARS = 2   # number of most-recent years to hold out for calibration
+        NOMINAL_COVERAGE = 0.80
+
         calibration = {}
         for position in POSITIONS:
             if position not in best_models:
                 continue
             pos_df       = position_df(df, position)
             feature_cols = get_feature_cols(pos_df)
-            pos_df_wy    = pos_df.copy()
-            pos_df_wy["signing_year"] = df.loc[pos_df.index, "signing_year"]
 
-            oof_low  = loyo_cv(pos_df_wy, lambda: make_xgb_quantile(0.10), feature_cols, position)
-            oof_high = loyo_cv(pos_df_wy, lambda: make_xgb_quantile(0.90), feature_cols, position)
+            # Attach signing_year for temporal split
+            signing_years = df.loc[pos_df.index, "signing_year"]
+            all_years     = sorted(signing_years.dropna().unique())
 
-            if oof_low.empty or oof_high.empty or len(oof_low) != len(oof_high):
+            if len(all_years) <= CAL_YEARS:
+                log.warning("  %s: not enough years for CQR calibration split — skipping.", position)
                 continue
 
-            oof_low  = oof_low.reset_index(drop=True)
-            oof_high = oof_high.reset_index(drop=True)
-            y_true   = oof_low["y_true"].values
-            q_low    = oof_low["y_pred"].values
-            q_high   = oof_high["y_pred"].values
+            cal_year_set  = set(all_years[-CAL_YEARS:])
+            train_idx     = signing_years[~signing_years.isin(cal_year_set)].index
+            cal_idx       = signing_years[signing_years.isin(cal_year_set)].index
 
-            in_interval = (y_true >= q_low) & (y_true <= q_high)
+            X_train_cal = pos_df.loc[train_idx, feature_cols]
+            y_train_cal = pos_df.loc[train_idx, TARGET]
+            X_cal       = pos_df.loc[cal_idx, feature_cols]
+            y_cal       = pos_df.loc[cal_idx, TARGET].values
+
+            if len(X_cal) < 5:
+                log.warning("  %s: calibration set too small (%d rows) — skipping.", position, len(X_cal))
+                continue
+
+            # Train calibration-only quantile models (not the deployed models)
+            cal_low  = make_xgb_quantile(0.10)
+            cal_high = make_xgb_quantile(0.90)
+            cal_low.fit(X_train_cal, y_train_cal)
+            cal_high.fit(X_train_cal, y_train_cal)
+
+            q_low  = cal_low.predict(X_cal)
+            q_high = cal_high.predict(X_cal)
+
+            in_interval     = (y_cal >= q_low) & (y_cal <= q_high)
             actual_coverage = round(float(in_interval.mean()), 3)
 
-            # ── CQR correction ─────────────────────────────────────────────
-            # Conformity score for each sample: how far outside the interval
-            # the actual value fell (negative = already covered, positive = missed)
-            scores = np.maximum(q_low - y_true, y_true - q_high)
-            # 80th percentile of scores → the smallest expansion that achieves
-            # 80% coverage on held-out data (statistical guarantee via CQR)
-            cqr_correction = float(np.quantile(scores, 0.80))
+            # CQR conformity scores: how far each point fell outside [q_low, q_high]
+            scores = np.maximum(q_low - y_cal, y_cal - q_high)
+
+            # Finite-sample CQR quantile level (Romano et al. 2019)
+            n = len(scores)
+            quantile_level  = min(1.0, np.ceil((n + 1) * NOMINAL_COVERAGE) / n)
+            cqr_correction  = float(np.quantile(scores, quantile_level))
 
             calibration[position] = {
-                "nominal_coverage": 0.80,
-                "actual_coverage":  actual_coverage,
-                "cqr_correction":   round(cqr_correction, 5),
-                "n":                len(oof_low),
+                "nominal_coverage":  NOMINAL_COVERAGE,
+                "actual_coverage":   actual_coverage,
+                "cqr_correction":    round(cqr_correction, 5),
+                "n_calibration":     n,
+                "cal_years":         sorted(cal_year_set),
             }
-            log.info("  %s quantile calibration: raw coverage=%.1f%%  CQR correction=%.4f",
-                     position, actual_coverage * 100, cqr_correction)
+            log.info("  %s quantile calibration: raw coverage=%.1f%%  CQR correction=%.4f  (cal n=%d, years=%s)",
+                     position, actual_coverage * 100, cqr_correction, n, sorted(cal_year_set))
 
         for pos, cal in calibration.items():
             evaluation.setdefault(pos, {})["calibration"] = cal

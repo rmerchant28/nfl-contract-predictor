@@ -253,8 +253,11 @@ def build_ol_features(
 # ── Market context features ────────────────────────────────────────────────────
 def add_market_context(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add positional market context features.
-    Skips gracefully if position or signing_year columns are missing/empty.
+    Add positional market context features using only prior-season data.
+
+    For each (position, signing_year Y), all context features are derived
+    exclusively from contracts signed in years < Y, eliminating target leakage
+    into LOYO cross-validation folds and inference.
     """
     if df.empty:
         return df
@@ -265,46 +268,54 @@ def add_market_context(df: pd.DataFrame) -> pd.DataFrame:
             log.warning("add_market_context: missing column '%s', skipping context features.", col)
             return df
 
-    # Drop rows where groupby keys are null
     df = df.copy()
-    valid = df[df["position"].notna() & df["signing_year"].notna()]
+    valid = df[df["position"].notna() & df["signing_year"].notna()].copy()
     if valid.empty:
         log.warning("add_market_context: no rows with both position and signing_year populated.")
         return df
 
+    # Peer rank is within-year so it uses current-year data; it is dropped from
+    # model features (DROP_COLS) so it does not cause leakage.
     out_frames = []
     for (pos, yr), group in valid.groupby(["position", "signing_year"]):
         group = group.copy()
-
-        # Rank within position+year by APY (1 = highest paid)
         group["peer_rank"] = group["apy"].rank(ascending=False, method="min").astype("Int64")
-
-        # Top contract at this position this year
-        top_cap_pct = group["apy_pct_cap"].max()
-        group["top_contract_pct"] = top_cap_pct
-
         out_frames.append(group)
 
     if not out_frames:
         return df
 
     result = pd.concat(out_frames, ignore_index=True)
+    result = result.sort_values(["position", "signing_year"]).reset_index(drop=True)
 
-    # Years since last record contract per position (rolling max of top_contract_pct)
-    result = result.sort_values(["position", "signing_year"])
+    # Compute top_contract_pct and years_since_reset using ONLY prior years.
+    # For signing_year Y:
+    #   top_contract_pct  = max(apy_pct_cap) among all contracts signed before Y
+    #   years_since_reset = years since the last record was set before Y
+    # We iterate years in order and update the running state AFTER assigning
+    # features, so year Y never sees its own contracts in these features.
+    result["top_contract_pct"]  = np.nan
     result["years_since_reset"] = np.nan
 
-    for pos, grp in result.groupby("position"):
-        grp = grp.sort_values("signing_year")
-        running_max = 0.0
-        last_reset  = None
+    for pos, pos_grp in result.groupby("position"):
+        years = sorted(pos_grp["signing_year"].unique())
+        running_max     = 0.0
+        last_reset_year = None
 
-        for idx, row in grp.iterrows():
-            if row["apy_pct_cap"] and row["apy_pct_cap"] > running_max:
-                running_max = row["apy_pct_cap"]
-                last_reset  = row["signing_year"]
-            if last_reset is not None:
-                result.loc[idx, "years_since_reset"] = row["signing_year"] - last_reset
+        for yr in years:
+            yr_mask = (result["position"] == pos) & (result["signing_year"] == yr)
+
+            # Assign features derived from PRIOR years only
+            if running_max > 0:
+                result.loc[yr_mask, "top_contract_pct"] = running_max
+            if last_reset_year is not None:
+                result.loc[yr_mask, "years_since_reset"] = yr - last_reset_year
+
+            # NOW update state with current year so it is available for year Y+1
+            yr_max = pos_grp.loc[pos_grp["signing_year"] == yr, "apy_pct_cap"].max()
+            if pd.notna(yr_max) and yr_max > running_max:
+                running_max     = yr_max
+                last_reset_year = yr
 
     return result
 
